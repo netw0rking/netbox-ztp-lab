@@ -1,0 +1,25 @@
+name: Validate NetBox Data Model
+
+on:
+  pull_request:
+    paths:
+      - 'data/netbox-export.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          python-version: '3.12'
+
+      - name: Install package (+ dev extras)
+        run: uv sync --extra dev
+
+      - name: Schema validation + dry-run render (full test suite)
+        run: uv run pytest tests/ -v
+
+      - name: Topology generation check
+        run: uv run python3 generate_topology.py --data data/netbox-export.json --check

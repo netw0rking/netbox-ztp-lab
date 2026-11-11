@@ -1,0 +1,17 @@
+# NOT .git: /app needs a real git checkout at runtime for both
+# deploy/git-pull.cron (the whole GitOps pull mechanism) and
+# entrypoint.sh's own `git remote set-url origin ...` step (which runs
+# under `set -e` - confirmed live: excluding .git here made that command
+# fail instantly with "fatal: not a git repository" / exit 128, which
+# under `set -e` killed the whole entrypoint immediately, which crash-
+# looped the entire container, 24 restarts before this was caught). The
+# .venv exclusion below is what this file actually exists for - the
+# current Dockerfile doesn't even build one anymore (`uv pip install
+# --system`, no .venv), so this is now belt-and-suspenders, not load-
+# bearing, but still correct to keep.
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.env

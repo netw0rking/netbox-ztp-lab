@@ -1,0 +1,33 @@
+[project]
+name = "netbox-ztp-lab"
+version = "0.1.0"
+description = "NetBox-driven ZTP Clos fabric lab - topology generator, NetBox export, and the ZTP config-server CLI."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.32.0",
+    "jinja2==3.1.4",
+    "pynetbox==7.4.1",
+    "pyyaml==6.0.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.3", "httpx==0.27.2"]
+
+[project.scripts]
+ztp = "ztp_cli.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Existing top-level layout kept as-is rather than restructured into
+# a single importable package - minimizes churn to code that's already
+# tested and working. `ztp_server`, `netbox`, `schema`, `ztp_cli` are
+# real packages already (all have __init__.py); `generate_topology` is
+# the one loose top-level module.
+[tool.hatch.build.targets.wheel]
+packages = ["ztp_server", "netbox", "schema", "ztp_cli"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"generate_topology.py" = "generate_topology.py"

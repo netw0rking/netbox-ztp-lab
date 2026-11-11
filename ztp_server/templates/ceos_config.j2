@@ -1,0 +1,119 @@
+hostname {{ hostname }}
+!
+{% for user in users %}
+{% if user.auth == 'ssh_key' %}
+# `sshkey` (no hyphen) is a deprecated alias - confirmed live it's
+# silently accepted (and auto-normalized to `ssh-key` in
+# show running-config) when applied via a merge (`copy ... running-config`,
+# what ZTP'd leafs use), but the boot-time startup-config parser used by
+# a non-ZTP'd device (mgmt-switch-us-east-01a, loaded via containerlab's
+# own `startup-config:` node property) rejects it outright as
+# "% Unavailable command (This command is deprecated by
+# 'username USERNAME ssh-key')" - and dropped the whole username block
+# as a result, not just the offending line. Using the real, current
+# keyword here works on both apply paths.
+username {{ user.username }} privilege 15 role network-admin nopassword
+username {{ user.username }} ssh-key {{ user.value }}
+!
+{% elif user.auth == 'password' %}
+# Confirmed live: EOS accepts the plaintext password here directly and
+# stores its own sha512 hash (visible in show running-config as "secret
+# sha512 $6$..."), and real SSH login with a password-auth user
+# negotiates via the "keyboard-interactive" method (not "password" -
+# cEOS's sshd offers keyboard-interactive for password-style login,
+# confirmed live via `ssh -o PreferredAuthentications=keyboard-interactive`).
+username {{ user.username }} privilege 15 role network-admin secret {{ user.value }}
+!
+{% endif %}
+{% endfor %}
+# EOS defaults to pure L2/switch mode - `ip routing` must be explicitly
+# enabled globally before BGP (or any L3 routing) actually works, even
+# though interface-level IP addressing (ping between directly-connected
+# interfaces) works fine without it. Confirmed live: `show running-config`
+# showed a syntactically complete `router bgp 65011` block with the
+# right neighbors, applied cleanly via this project's own automated
+# config-merge step with no error - but re-entering that same context
+# by hand afterward failed outright with "% IP routing not enabled",
+# meaning the automated apply accepted the text without the same live
+# validation the interactive CLI enforces, and the underlying BGP
+# process/agent was never actually instantiated. `ip routing` needs to
+# land in the config before the `router bgp` block for BGP to actually
+# run, not just appear as text in running-config.
+ip routing
+!
+{% if mgmt_ip %}
+interface Management0
+   ip address {{ mgmt_ip }}
+!
+{% endif %}
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+interface {{ if_name }}
+   description to {{ intf.connects_to.device }} {{ intf.connects_to.interface }}
+   no switchport
+   ip address {{ intf.ip }}
+!
+{% endfor %}
+{% for if_name, intf in interfaces.items() if intf.role == 'oob' %}
+interface {{ if_name }}
+   description to {{ intf.connects_to.device }} {{ intf.connects_to.interface }}
+!
+{% endfor %}
+interface Loopback0
+   ip address {{ loopback }}
+!
+{% if overlay_vni %}
+# VXLAN/EVPN overlay -
+# confirmed live directly on this device before being written here:
+# `vlan`/`interface Vxlan1`/`interface Vlan<N>` all apply cleanly, and
+# `address-family evpn` + `neighbor ... activate` layers onto the
+# existing underlay eBGP sessions with no change to them.
+vlan {{ overlay_vlan_id }}
+!
+interface Vxlan1
+   vxlan source-interface Loopback0
+   vxlan vlan {{ overlay_vlan_id }} vni {{ overlay_vni }}
+!
+interface Vlan{{ overlay_vlan_id }}
+   ip address {{ overlay_test_ip }}
+!
+{% endif %}
+{% for if_name, intf in interfaces.items() if intf.role == 'overlay' %}
+# Real, L2-bridged test host - a plain
+# access-mode switchport in the same VLAN Vxlan1 already maps to
+# overlay_vni above, no separate bridging step needed the way FRR's
+# kernel bridge (ztp_frr.py.j2) requires - EOS's own VLAN/bridging
+# fabric already does this the moment the port is in the right VLAN.
+interface {{ if_name }}
+   description to {{ intf.connects_to.device }} {{ intf.connects_to.interface }}
+   switchport access vlan {{ overlay_vlan_id }}
+!
+{% endfor %}
+router bgp {{ bgp_asn }}
+   router-id {{ loopback.split('/')[0] }}
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+   neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} remote-as {{ intf.connects_to.peer_asn }}
+{% endfor %}
+   redistribute connected
+{% if overlay_vni %}
+   !
+   # The Vxlan1 interface's own `vxlan vlan X vni Y` mapping alone isn't
+   # enough to generate real EVPN routes - confirmed live: `show bgp evpn
+   # route-type imet` stayed completely empty with only that plus
+   # `address-family evpn` + `neighbor ... activate` (below) in place.
+   # This "VLAN-based" EVPN binding (distinct from EOS's other, more
+   # complex "VLAN-aware bundle" style, not needed for a single VLAN) is
+   # what actually ties the local VLAN to a real RD/route-target and
+   # triggers advertisement - confirmed live: adding exactly this made a
+   # real type-3 (inclusive multicast) route appear immediately.
+   vlan {{ overlay_vlan_id }}
+      rd {{ loopback.split('/')[0] }}:{{ overlay_vlan_id }}
+      route-target both {{ overlay_vni }}:{{ overlay_vni }}
+      redistribute learned
+   !
+   address-family evpn
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+      neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} activate
+{% endfor %}
+{% endif %}
+!
+end

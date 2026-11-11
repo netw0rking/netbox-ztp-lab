@@ -1,0 +1,1 @@
+*/5 * * * * root /app/deploy/git-pull-and-reload.sh

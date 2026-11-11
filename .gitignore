@@ -1,0 +1,8 @@
+.env
+venv/
+.venv/
+topology/
+__pycache__/
+*.pyc
+data/netbox-export.json.bak
+*.egg-info/

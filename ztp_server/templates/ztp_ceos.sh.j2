@@ -1,0 +1,24 @@
+#!/bin/bash
+# cEOS-lab ZTP bootstrap script, fetched via DHCP option 67.
+SERIAL=$(FastCli -p 15 -c "show version" | grep -i "Serial number" | awk '{print $NF}')
+curl -sf "http://{{ server_host }}/ztp/config/${SERIAL}" -o /mnt/flash/startup-config
+# cEOS containers have no separate hardware layer to power-cycle, so
+# "reload now" (how a ZTP script applies its fetched config on real EOS
+# hardware) is rejected outright - confirmed live: "% Unavailable command
+# (not supported on this hardware platform)".
+#
+# `configure replace` (this script's first fix) does apply the file with
+# no reload needed, but it's a wholesale replace of the ENTIRE running
+# config - confirmed live this silently wipes anything our rendered
+# config doesn't mention, including the container's own management
+# interface address (whatever cEOS/Docker had set up on it before ZTP
+# ran): `ip addr show eth0` afterward showed no inet address left at
+# all, and the device became unreachable at its containerlab mgmt IP.
+# Our rendered config (ztp_server/templates/ceos_config.j2) only ever
+# covers hostname, fabric interfaces, loopback, and BGP - it was never
+# meant to be the device's *entire* config. `copy ... running-config`
+# applies the file's lines as an incremental merge instead (same
+# behavior as typing each line at the CLI) - it sets what we specify
+# and leaves everything else, including the management interface,
+# untouched.
+FastCli -p 15 -c "copy flash:startup-config running-config"

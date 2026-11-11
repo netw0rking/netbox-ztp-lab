@@ -1,0 +1,94 @@
+{
+  "site": "us-west-03a",
+  "devices": {
+    "bbr-09-us-west-03a": {
+      "role": "bbr",
+      "platform": "frr",
+      "vendor_image": "quay.io/frrouting/frr:10.5.1",
+      "site_asn": 65000,
+      "bgp_asn": 65000,
+      "loopback": "192.168.1.9/32",
+      "serial_number": "FRR-BBR09-USWEST03A",
+      "net": "49.0000.1921.6800.1009.00",
+      "backbone_peers": [
+        {
+          "loopback": "192.168.1.3",
+          "asn": 65000
+        },
+        {
+          "loopback": "192.168.1.8",
+          "asn": 65000
+        }
+      ],
+      "interfaces": {
+        "eth1": {
+          "role": "oob",
+          "ip": "10.200.9.1/29",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-03a",
+            "interface": "Ethernet2"
+          }
+        },
+        "eth3": {
+          "role": "backbone",
+          "ip": "10.108.9.9/24",
+          "connects_to": {
+            "device": "bbr-08-us-south-02a",
+            "interface": "eth4"
+          }
+        },
+        "eth4": {
+          "role": "backbone",
+          "ip": "10.109.10.9/24",
+          "connects_to": {
+            "device": "bbr-10-us-west-05a",
+            "interface": "eth3"
+          }
+        },
+        "eth2": {
+          "role": "backbone",
+          "ip": "10.104.9.9/24",
+          "connects_to": {
+            "device": "bbr-04-us-west-02a",
+            "interface": "eth4"
+          }
+        }
+      },
+      "sr_index": 119
+    },
+    "ztp-server-us-west-03a": {
+      "role": "server",
+      "platform": "linux",
+      "vendor_image": "netbox-ztp-lab-ztp-server:latest",
+      "interfaces": {
+        "eth1": {
+          "role": "oob",
+          "ip": "10.200.9.6/29",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-03a",
+            "interface": "Ethernet1"
+          }
+        }
+      }
+    },
+    "mgmt-switch-us-west-03a": {
+      "role": "mgmt-switch",
+      "interfaces": {
+        "Ethernet1": {
+          "role": "oob",
+          "connects_to": {
+            "device": "ztp-server-us-west-03a",
+            "interface": "eth1"
+          }
+        },
+        "Ethernet2": {
+          "role": "oob",
+          "connects_to": {
+            "device": "bbr-09-us-west-03a",
+            "interface": "eth1"
+          }
+        }
+      }
+    }
+  }
+}

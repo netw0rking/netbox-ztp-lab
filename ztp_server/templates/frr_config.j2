@@ -1,0 +1,292 @@
+frr version 8.4_git
+frr defaults traditional
+hostname {{ hostname }}
+no ipv6 forwarding
+!
+{% for if_name, intf in interfaces.items() if intf.connects_to %}
+interface {{ if_name }}
+ description to {{ intf.connects_to.device }} {{ intf.connects_to.interface }}
+{% if intf.role == 'backbone' %}
+ ip router isis 1
+ isis network point-to-point
+ isis circuit-type level-2-only
+{% endif %}
+!
+{% endfor %}
+{% if net %}
+!
+# Backbone ring underlay - IS-IS provides reachability
+# across the ring; EVPN route exchange itself rides on a separate
+# multihop eBGP session (backbone_peers, below), not this IGP directly -
+# matches the real network's own separation of IS-IS-physical-topology
+# from BGP-logical-peering, confirmed as its actual design earlier this
+# session (corrected from this plan's own first draft, which had
+# mistakenly used a single per-link eBGP session for both concerns).
+#
+# Per-interface IS-IS enablement (ip router isis 1 / isis network
+# point-to-point / isis circuit-type level-2-only) lives in the single
+# merged interface stanza above, NOT a second separate one here -
+# confirmed live: `vtysh -f` loading two different config blocks for
+# the SAME physical interface does not merge them, the second
+# (description-only) block silently wins and the isis lines never take
+# effect at all ("show isis neighbor" came back empty, no adjacency).
+router isis 1
+ net {{ net }}
+ is-type level-2-only
+{% if sr_index is defined and sr_index is not none %}
+ segment-routing on
+ segment-routing prefix {{ loopback.split('/')[0] }}/32 index {{ sr_index }}
+{% endif %}
+{% if srv6_locator %}
+ segment-routing srv6
+  locator default
+ exit
+{% endif %}
+exit
+!
+# "lo-vtep" (ztp_frr.py.j2's dummy interface holding this device's own
+# loopback) must be IS-IS-enabled too, or its /32 is never included in
+# any LSP at all - confirmed live: adjacencies formed fine over eth3/
+# eth4 alone (hellos only need the enabled interface), but "show ip
+# route isis" on a neighbor came back completely empty, so the
+# multihop EVPN sessions (backbone_peers, below) could never reach
+# this device's loopback either. "isis passive" advertises the
+# interface's connected prefix without attempting to form an adjacency
+# over it, which could never happen on a loopback anyway.
+interface lo-vtep
+ ip router isis 1
+ isis passive
+exit
+!
+{% endif %}
+{% if srv6_locator or sr_policies %}
+!
+# SRv6 locator (zebra) + explicit SR-Policies (pathd), merged into ONE
+# top-level "segment-routing" stanza - confirmed live deploying:
+# two SEPARATE top-level "segment-routing" stanzas (one for
+# the srv6 sub-tree, one for the pathd sub-tree) crash pathd outright
+# ("read returned EOF") on every `vtysh -f` application, even though
+# each half applies fine individually via interactive vtysh -c
+# commands - the same class of bug as this project's other "don't
+# create a second stanza for the same top-level command" lessons, just
+# one FRR/vtysh hadn't previously exercised. srv6 syntax verified live
+# against quay.io/frrouting/frr:10.5.1 (no block-len/node-len/func-bits
+# needed, defaults apply, brings the locator to Status "Up"). The pathd
+# sub-tree's syntax (NAI/prefix-based segments, `explicit segment-list`
+# candidate-path) is accepted and registered by pathd on this FRR
+# version (`show sr-te policy` confirms it).
+segment-routing
+{% if srv6_locator %}
+ srv6
+  locators
+   locator default
+    prefix {{ srv6_locator }}
+   exit
+   !
+  exit
+  !
+{% endif %}
+{% if sr_policies %}
+ traffic-eng
+{% for policy in sr_policies %}
+  segment-list {{ policy.name }}-segments
+{% for seg in policy.segments %}
+   index {{ seg.index }} nai prefix {{ seg.nai_prefix }} algorithm 0
+{% endfor %}
+  exit
+  !
+  policy color {{ policy.color }} endpoint {{ policy.endpoint }}
+   name {{ policy.name }}
+   candidate-path preference 100 name {{ policy.name }} explicit segment-list {{ policy.name }}-segments
+  exit
+  !
+{% endfor %}
+ exit
+ !
+{% endif %}
+exit
+!
+{% endif %}
+{% if hold_down_block %}
+!
+# Hold-down aggregate - a stable, null-routed
+# summary of part of this site's own /22, originated into the site's
+# own underlay unicast routing only (redistribute static, below).
+# Deliberately does NOT yet cross the backbone as a real EVPN Type-5
+# route - that requires an L3VNI bound to this BGP instance, which
+# nothing in this lab has (confirmed: EVPN Type-5
+# origination needs an L3VNI, and none exists anywhere here yet).
+# Real L3VNI/VRF design for BBR-originated Type-5 is a separate,
+# still-open follow-up decision, not solved here.
+ip route {{ hold_down_block }} Null0
+!
+{% endif %}
+{% set ebgp = namespace(any=false) %}
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' and intf.connects_to.peer_asn != bgp_asn %}
+{% set ebgp.any = true %}
+{% endfor %}
+{% if ebgp.any %}
+# FRR enforces ebgp-requires-policy: an eBGP session with no route-map
+# in a direction sends/accepts nothing that way - confirmed live, every
+# backbone eBGP session sat at "(Policy)" with all updates discarded.
+# Fabric eBGP sessions (fabric BBR in the backbone AS <-> its site's DSR)
+# get this explicit permit-all policy in both directions, both AFs.
+route-map EBGP-PERMIT permit 10
+!
+{% endif %}
+{% if vrf_name and l3vni %}
+# Bind the L3VNI to its VRF. Without this, zebra treats the VNI as Layer 2
+# (confirmed live 2026-10-04: "show evpn vni" said Type L2, only Type-3
+# IMET routes existed, no Type-5) and routed EVPN / DCI carries nothing.
+vrf {{ vrf_name }}
+ vni {{ l3vni }}
+exit-vrf
+!
+{% endif %}
+{% if backbone_peers %}
+route-map BACKBONE-TYPE5-OUT permit 10
+ match evpn route-type prefix
+!
+{% endif %}
+router bgp {{ bgp_asn }}
+ bgp router-id {{ loopback.split('/')[0] }}
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} remote-as {{ intf.connects_to.peer_asn }}
+{% endfor %}
+{% for peer in backbone_peers %}
+ neighbor {{ peer.loopback }} remote-as {{ peer.asn }}
+ # "lo-vtep", not "lo": this project's own established dummy-interface
+ # convention (ztp_frr.py.j2) for every FRR device's loopback/VTEP
+ # source address, not FRR's plain "lo" - the loopback IP is never
+ # assigned to the container's real loopback interface here.
+ neighbor {{ peer.loopback }} update-source lo-vtep
+{% if peer.asn != bgp_asn %}
+ neighbor {{ peer.loopback }} ebgp-multihop 5
+{% endif %}
+{% endfor %}
+ !
+ address-family ipv4 unicast
+  redistribute connected
+{% if hold_down_block %}
+  redistribute static
+{% endif %}
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' and intf.connects_to.peer_asn != bgp_asn %}
+  neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT in
+  neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT out
+{% endfor %}
+{% for peer in backbone_peers if peer.asn == bgp_asn %}
+{% if route_reflector %}
+  neighbor {{ peer.loopback }} route-reflector-client
+{% else %}
+  # Backbone iBGP: a fabric BBR re-advertises its site's
+  # eBGP-learned prefixes, whose next hop (the DSR's /31) IS-IS doesn't
+  # carry - next-hop-self makes it this BBR's own loopback instead.
+  neighbor {{ peer.loopback }} next-hop-self
+{% endif %}
+{% endfor %}
+ exit-address-family
+{% if overlay_vni or l3vni %}
+ !
+ address-family l2vpn evpn
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+  neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} activate
+{% if intf.connects_to.peer_asn != bgp_asn %}
+  neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT in
+  neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT out
+{% endif %}
+{% endfor %}
+  advertise-all-vni
+ exit-address-family
+{% endif %}
+{% if role == 'mrr' %}
+!
+# MRR route-reflector - every neighbor here is an
+# ESR or BBR in the same site_asn (iBGP), reflected rather than requiring
+# a full EVPN mesh between them.
+address-family l2vpn evpn
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} activate
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-reflector-client
+{% endfor %}
+exit-address-family
+!
+{% endif %}
+{% if role == 'spine' %}
+!
+# DSR (spine) route-reflector - confirmed live: DSR is the ONLY device
+# with a fabric link to every other device in the site (ESR-01, ESR-02,
+# MRR, BBR each only physically connect to DSR, never to each other or
+# to MRR). MRR's own route-reflector-client block (above) reflects
+# nothing, since MRR's only neighbor IS DSR. Without DSR itself
+# reflecting, standard iBGP split-horizon means ESR-01 never learns
+# ESR-02/MRR/BBR's loopback (breaks VXLAN next-hop resolution) or any
+# EVPN route from them - confirmed live via `show ip route bgp` on
+# esr-01-us-central-01a before this fix.
+address-family ipv4 unicast
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' and intf.connects_to.peer_asn == bgp_asn %}
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-reflector-client
+{% endfor %}
+exit-address-family
+!
+# DSR isn't a VTEP itself (no overlay_vni/l3vni), but must still relay
+# EVPN routes between its clients - hence it doesn't claim to originate
+# any VNI here, unlike the overlay_vni-gated block above.
+address-family l2vpn evpn
+{% for if_name, intf in interfaces.items() if intf.role == 'fabric' %}
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} activate
+{% if intf.connects_to.peer_asn == bgp_asn %}
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-reflector-client
+{% else %}
+ # route-reflector-client is invalid on an eBGP neighbor - the fabric
+ # BBR sits in the backbone AS, not this site's.
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT in
+ neighbor {{ intf.connects_to.peer_ip.split('/')[0] }} route-map EBGP-PERMIT out
+{% endif %}
+{% endfor %}
+exit-address-family
+!
+{% endif %}
+{% if role == 'bbr' %}
+!
+# BBR Type-5-only backbone relay - a BBR isn't a VTEP for its
+# own site's L2 the way ESR is (no overlay_vni/l3vni of its own), but
+# still needs its own l2vpn evpn address-family to relay Type-5 routes
+# across the backbone via backbone_peers - the BACKBONE-TYPE5-OUT
+# route-map (above) is what actually restricts what gets sent, so no
+# Type-2/3 MAC/ARP churn from one site's fabric leaks into another's.
+address-family l2vpn evpn
+{% for peer in backbone_peers %}
+ neighbor {{ peer.loopback }} activate
+ neighbor {{ peer.loopback }} route-map BACKBONE-TYPE5-OUT out
+{% if route_reflector and peer.asn == bgp_asn %}
+ neighbor {{ peer.loopback }} route-reflector-client
+{% endif %}
+{% endfor %}
+ advertise-all-vni
+exit-address-family
+!
+{% endif %}
+!
+{% if vrf_name and l3vni %}
+# Routed EVPN symmetric-IRB - a separate
+# per-VRF bgp instance, distinct from the underlay one above. Its own
+# "redistribute connected" picks up the P2P host link(s) enslaved into
+# this VRF (ztp_frr.py.j2's own access_interfaces handling), and
+# "advertise ipv4 unicast" under l2vpn evpn is what turns each of those
+# into a real EVPN type-5 route toward the other VTEPs sharing this
+# device's l3vni.
+router bgp {{ bgp_asn }} vrf {{ vrf_name }}
+ bgp router-id {{ loopback.split('/')[0] }}
+ address-family ipv4 unicast
+  redistribute connected
+ exit-address-family
+ address-family l2vpn evpn
+  advertise ipv4 unicast
+  # DCI: auto-derived route-targets are <own ASN>:<VNI>, which differ per
+  # fabric (65100 vs 65200), so import this L3VNI from any ASN. Syntax
+  # verified live (vtysh -C) on FRR 8.4 and 10.5.1.
+  route-target import *:{{ l3vni }}
+ exit-address-family
+!
+{% endif %}
+end

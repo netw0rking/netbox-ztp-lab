@@ -1,0 +1,44 @@
+{
+  "site": "us-east-01a",
+  "devices": {
+    "spine-01-us-east-01a": {
+      "role": "spine",
+      "platform": "srlinux",
+      "vendor_image": "ghcr.io/nokia/srlinux:latest",
+      "serial_number": "SRL-SPINE1-0001",
+      "loopback": "10.0.0.1/32",
+      "interfaces": {
+        "e1-2": {
+          "role": "fabric",
+          "ip": "10.0.0.32/31",
+          "connects_to": {
+            "device": "leaf-01-us-east-01a",
+            "interface": "Ethernet2",
+            "peer_ip": "10.0.0.33/31",
+            "peer_asn": 65011
+          }
+        }
+      }
+    },
+    "leaf-01-us-east-01a": {
+      "role": "leaf",
+      "platform": "ceos",
+      "vendor_image": "ceos:4.28.8M",
+      "serial_number": "CEOS-LEAF1-0001",
+      "bgp_asn": 65011,
+      "loopback": "10.0.0.11/32",
+      "interfaces": {
+        "Ethernet2": {
+          "role": "fabric",
+          "ip": "10.0.0.33/31",
+          "connects_to": {
+            "device": "spine-01-us-east-01a",
+            "interface": "e1-2",
+            "peer_ip": "10.0.0.32/31",
+            "peer_asn": 65001
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,309 @@
+{
+  "site": "us-west-01a",
+  "devices": {
+    "dsr-01-us-west-01a": {
+      "role": "spine",
+      "platform": "frr",
+      "site_asn": 65200,
+      "bgp_asn": 65200,
+      "loopback": "10.1.2.1/32",
+      "serial_number": "FRR-DSR1-WEST-0001",
+      "interfaces": {
+        "eth1": {
+          "role": "fabric",
+          "ip": "10.1.2.33/31",
+          "connects_to": {
+            "device": "esr-01-us-west-01a",
+            "interface": "eth2",
+            "peer_ip": "10.1.2.32/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth2": {
+          "role": "fabric",
+          "ip": "10.1.2.35/31",
+          "connects_to": {
+            "device": "esr-02-us-west-01a",
+            "interface": "eth2",
+            "peer_ip": "10.1.2.34/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth3": {
+          "role": "fabric",
+          "ip": "10.1.2.37/31",
+          "connects_to": {
+            "device": "bbr-01-us-west-01a",
+            "interface": "eth2",
+            "peer_ip": "10.1.2.36/31",
+            "peer_asn": 65000
+          }
+        },
+        "eth4": {
+          "role": "fabric",
+          "ip": "10.1.2.39/31",
+          "connects_to": {
+            "device": "mrr-01-us-west-01a",
+            "interface": "eth1",
+            "peer_ip": "10.1.2.38/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth5": {
+          "role": "oob",
+          "ip": "10.1.2.129/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet2"
+          }
+        }
+      }
+    },
+    "esr-01-us-west-01a": {
+      "role": "leaf",
+      "platform": "frr",
+      "site_asn": 65200,
+      "bgp_asn": 65200,
+      "loopback": "10.1.2.11/32",
+      "serial_number": "FRR-ESR1-WEST-0001",
+      "interfaces": {
+        "eth2": {
+          "role": "fabric",
+          "ip": "10.1.2.32/31",
+          "connects_to": {
+            "device": "dsr-01-us-west-01a",
+            "interface": "eth1",
+            "peer_ip": "10.1.2.33/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth3": {
+          "role": "access",
+          "ip": "10.1.2.64/31",
+          "connects_to": {
+            "device": "host-01-us-west-01a",
+            "interface": "eth1"
+          }
+        },
+        "eth1": {
+          "role": "oob",
+          "ip": "10.1.2.130/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet3"
+          }
+        }
+      },
+      "l3vni": 50000,
+      "vrf_name": "DCI"
+    },
+    "esr-02-us-west-01a": {
+      "role": "leaf",
+      "platform": "frr",
+      "site_asn": 65200,
+      "bgp_asn": 65200,
+      "loopback": "10.1.2.12/32",
+      "serial_number": "FRR-ESR2-WEST-0001",
+      "interfaces": {
+        "eth2": {
+          "role": "fabric",
+          "ip": "10.1.2.34/31",
+          "connects_to": {
+            "device": "dsr-01-us-west-01a",
+            "interface": "eth2",
+            "peer_ip": "10.1.2.35/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth1": {
+          "role": "oob",
+          "ip": "10.1.2.131/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet4"
+          }
+        }
+      },
+      "l3vni": 50000,
+      "vrf_name": "DCI"
+    },
+    "mrr-01-us-west-01a": {
+      "role": "mrr",
+      "platform": "frr",
+      "site_asn": 65200,
+      "bgp_asn": 65200,
+      "serial_number": "FRR-MRR1-WEST-0001",
+      "loopback": "10.1.2.13/32",
+      "interfaces": {
+        "eth1": {
+          "role": "fabric",
+          "ip": "10.1.2.38/31",
+          "connects_to": {
+            "device": "dsr-01-us-west-01a",
+            "interface": "eth4",
+            "peer_ip": "10.1.2.39/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth2": {
+          "role": "oob",
+          "ip": "10.1.2.132/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet5"
+          }
+        }
+      }
+    },
+    "bbr-01-us-west-01a": {
+      "role": "bbr",
+      "platform": "frr",
+      "vendor_image": "quay.io/frrouting/frr:10.5.1",
+      "site_asn": 65200,
+      "bgp_asn": 65000,
+      "serial_number": "FRR-BBR1-WEST-0001",
+      "loopback": "10.1.2.14/32",
+      "net": "49.0000.0000.0002.00",
+      "backbone_peers": [
+        {
+          "loopback": "192.168.1.3",
+          "asn": 65000
+        },
+        {
+          "loopback": "192.168.1.8",
+          "asn": 65000
+        }
+      ],
+      "interfaces": {
+        "eth2": {
+          "role": "fabric",
+          "ip": "10.1.2.36/31",
+          "connects_to": {
+            "device": "dsr-01-us-west-01a",
+            "interface": "eth3",
+            "peer_ip": "10.1.2.37/31",
+            "peer_asn": 65200
+          }
+        },
+        "eth1": {
+          "role": "oob",
+          "ip": "10.1.2.133/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet6"
+          }
+        },
+        "eth3": {
+          "role": "backbone",
+          "ip": "10.105.12.12/24",
+          "connects_to": {
+            "device": "bbr-05-us-west-04a",
+            "interface": "eth4"
+          }
+        },
+        "eth4": {
+          "role": "backbone",
+          "ip": "10.110.12.12/24",
+          "connects_to": {
+            "device": "bbr-10-us-west-05a",
+            "interface": "eth4"
+          }
+        }
+      },
+      "l3vni": 50000,
+      "vrf_name": "DCI",
+      "sr_index": 102
+    },
+    "host-01-us-west-01a": {
+      "role": "host",
+      "interfaces": {
+        "eth1": {
+          "role": "access",
+          "ip": "10.1.2.65/31",
+          "connects_to": {
+            "device": "esr-01-us-west-01a",
+            "interface": "eth3"
+          }
+        },
+        "eth2": {
+          "role": "oob",
+          "ip": "10.1.2.134/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet7"
+          }
+        }
+      },
+      "default_gw": "10.1.2.64"
+    },
+    "ztp-server-us-west-01a": {
+      "role": "server",
+      "platform": "linux",
+      "vendor_image": "netbox-ztp-lab-ztp-server:latest",
+      "interfaces": {
+        "eth1": {
+          "role": "oob",
+          "ip": "10.1.2.254/25",
+          "connects_to": {
+            "device": "mgmt-switch-us-west-01a",
+            "interface": "Ethernet1"
+          }
+        }
+      }
+    },
+    "mgmt-switch-us-west-01a": {
+      "role": "mgmt-switch",
+      "interfaces": {
+        "Ethernet1": {
+          "role": "oob",
+          "connects_to": {
+            "device": "ztp-server-us-west-01a",
+            "interface": "eth1"
+          }
+        },
+        "Ethernet2": {
+          "role": "oob",
+          "connects_to": {
+            "device": "dsr-01-us-west-01a",
+            "interface": "eth5"
+          }
+        },
+        "Ethernet3": {
+          "role": "oob",
+          "connects_to": {
+            "device": "esr-01-us-west-01a",
+            "interface": "eth1"
+          }
+        },
+        "Ethernet4": {
+          "role": "oob",
+          "connects_to": {
+            "device": "esr-02-us-west-01a",
+            "interface": "eth1"
+          }
+        },
+        "Ethernet5": {
+          "role": "oob",
+          "connects_to": {
+            "device": "mrr-01-us-west-01a",
+            "interface": "eth2"
+          }
+        },
+        "Ethernet6": {
+          "role": "oob",
+          "connects_to": {
+            "device": "bbr-01-us-west-01a",
+            "interface": "eth1"
+          }
+        },
+        "Ethernet7": {
+          "role": "oob",
+          "connects_to": {
+            "device": "host-01-us-west-01a",
+            "interface": "eth2"
+          }
+        }
+      }
+    }
+  }
+}
