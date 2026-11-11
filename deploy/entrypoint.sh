@@ -9,8 +9,10 @@ if [ -f /root/.ssh_deploy_key ]; then
     cp /root/.ssh_known_hosts /root/.ssh/known_hosts
 
     git config --global core.sshCommand "ssh -i /root/.ssh/id_ed25519 -o UserKnownHostsFile=/root/.ssh/known_hosts"
-    git remote set-url origin git@github.com:netw0rking/netbox-ztp-lab.git
 fi
+
+# The repo is public, so the cron pull uses anonymous HTTPS.
+git remote set-url origin https://github.com/netw0rking/netbox-ztp-lab.git
 
 # Operator SSH access into ztp-server itself, key-only (see
 # deploy/sshd_local.conf - PasswordAuthentication is disabled entirely).
