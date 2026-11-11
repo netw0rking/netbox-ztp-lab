@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run by cron every 5 minutes: pull, reinstall if deps changed, reload.
 set -e
+export PATH=/usr/local/bin:$PATH
 
 cd /app
 before="$(git rev-parse HEAD)"
