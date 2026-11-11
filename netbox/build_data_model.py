@@ -9,9 +9,7 @@ REPO_ROOT = Path(__file__).parent.parent
 DATA_MODEL_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "valid_data_model.json"
 
 SITE_SLUG = "us-east-01a"
-# NetBox's Site.description is capped at 200 chars (confirmed live via a 400
-# on the full block below) - keep it short and put the full clab metadata in
-# Comments instead, which is unbounded free text.
+# NetBox caps Site.description at 200 chars; see SITE_COMMENTS.
 SITE_DESCRIPTION = (
     "Virtual lab (containerlab) - see Comments for lab name, repo path, "
     "topology file, and deploy/destroy commands."
@@ -47,12 +45,7 @@ CUSTOM_FIELD_DEFS = [
         "label": "ZTP Serial Number",
         "object_types": ["dcim.device"],
     },
-    # VXLAN/EVPN overlay phase - leaf-only.
-    # overlay_test_ip is a plain text custom field (CIDR string), not a
-    # real IPAM IP address object like interfaces' own "ip" fields are -
-    # a deliberate simplification for this single-VLAN proof-of-concept
-    # phase, not a structural rule; a real IPAM Prefix + IP Address pair
-    # would be the natural upgrade for a future multi-tenant phase.
+    # VXLAN/EVPN overlay phase, leaf-only.
     {
         "name": "overlay_vlan_id",
         "type": "integer",
@@ -71,8 +64,7 @@ CUSTOM_FIELD_DEFS = [
         "label": "Overlay Test IP",
         "object_types": ["dcim.device"],
     },
-    # L3VNI/VRF (routed EVPN symmetric-IRB) phase - leaf-only, disjoint
-    # from the L2 overlay_* fields above.
+    # L3VNI/VRF fields for routed EVPN, leaf-only.
     {
         "name": "l3vni",
         "type": "integer",
@@ -85,43 +77,28 @@ CUSTOM_FIELD_DEFS = [
         "label": "VRF Name",
         "object_types": ["dcim.device"],
     },
-    # A plain "host" device (role=host) has no bgp_asn/loopback of its
-    # own - this is its only device-level custom field, used by
-    # generate_topology.py's role=="host" handling to add a default
-    # route toward its leaf's P2P address (routed access hosts only;
-    # L2-bridged hosts have no gateway, see interface role "overlay").
+    # Host devices get a default route via this field.
     {
         "name": "default_gw",
         "type": "text",
         "label": "Default Gateway",
         "object_types": ["dcim.device"],
     },
-    # Backbone/fabric lab phase - every device in that lab
-    # carries its site's shared ASN (iBGP + route-reflection inside a
-    # site, matching the design's "AS per PoP" numbering), distinct from
-    # bgp_asn's existing per-device meaning in the base lab.
+    # Backbone lab: devices share their site's ASN.
     {
         "name": "site_asn",
         "type": "integer",
         "label": "Site ASN",
         "object_types": ["dcim.device"],
     },
-    # Backbone ring - only set on ring BBRs.
-    # Found live building the 4-site ring: without these three
-    # custom fields, `net`/`backbone_peers`/`vendor_image` silently never
-    # survived a NetBox push/export round-trip (data/netbox-export.json
-    # had them as None on every device), so the whole IS-IS +
-    # multihop-EVPN frr_config.j2 work never actually rendered anything
-    # on a real deploy - every `{% if net %}`/`{% if backbone_peers %}`
-    # guard was false.
+    # Backbone ring fields, set only on ring BBRs.
     {
         "name": "net",
         "type": "text",
         "label": "IS-IS NSAP (net)",
         "object_types": ["dcim.device"],
     },
-    # Ladder backbone: marks bbr-03/bbr-08 as the backbone's
-    # iBGP route reflectors.
+    # Ladder backbone route reflectors: bbr-03 and bbr-08.
     {
         "name": "route_reflector",
         "type": "boolean",
@@ -134,11 +111,7 @@ CUSTOM_FIELD_DEFS = [
         "label": "Backbone multihop EVPN peers",
         "object_types": ["dcim.device"],
     },
-    # vendor_image predates this fix (confirmed live: never
-    # had a NetBox field) - added here for the same reason, now that a
-    # real vendor pin (quay.io/frrouting/frr:10.5.1, needed for SRv6)
-    # actually matters for a device that goes through NetBox rather
-    # than being read straight from a fixture file.
+    # vendor_image, pinned for SRv6 (quay.io/frrouting/frr:10.5.1).
     {
         "name": "vendor_image",
         "type": "text",
@@ -151,24 +124,14 @@ CUSTOM_FIELD_DEFS = [
         "label": "SRv6 Locator",
         "object_types": ["dcim.device"],
     },
-    # Found live deploying SR-Policies: an earlier plan note claimed "NetBox
-    # custom fields don't support list-of-object values (confirmed by
-    # every existing custom field in this codebase being a scalar
-    # int/text)" - false, this codebase's own backbone_peers field
-    # (above) already proves type "json" works fine. Without this,
-    # sr_policies never round-tripped through NetBox at all, so the
-    # "real, deployable demonstration" policy added to
-    # us-central-01a's fixture could never actually reach the live
-    # device via the normal push->export->generate_topology pipeline -
-    # data/netbox-export.json came back with sr_policies as None.
+    # sr_policies is a json custom field.
     {
         "name": "sr_policies",
         "type": "json",
         "label": "SRv6 SR-Policies (pathd)",
         "object_types": ["dcim.device"],
     },
-    # SR-MPLS backbone underlay - IS-IS prefix-SID
-    # index, one per ring BBR, unique across the backbone.
+    # IS-IS prefix-SID index, one per ring BBR.
     {
         "name": "sr_index",
         "type": "integer",
@@ -202,7 +165,7 @@ def build_schema_objects(nb, data, site_slug, site_description, site_comments):
             {"slug": slug},
             defaults={"name": slug.replace("-", " ").title()},
         )
-    # "server" role is assumed to already exist from prior work (kp00srvr02 import).
+    # "server" role must already exist in NetBox.
     roles["server"] = nb.dcim.device_roles.get(slug="server")
     if roles["server"] is None:
         raise RuntimeError("Expected existing NetBox role 'server' not found - create it first")
@@ -234,7 +197,7 @@ def build_schema_objects(nb, data, site_slug, site_description, site_comments):
     return {"site": site, "roles": roles, "platforms": platforms}
 
 
-RIR_SLUG = "private"  # existing "RFC1918/CGNAT (Private)" RIR from prior work
+RIR_SLUG = "private"  # RFC1918/CGNAT (Private)
 
 IPAM_ROLE_DEFS = {
     "production": {"name": "Production"},
@@ -243,48 +206,16 @@ IPAM_ROLE_DEFS = {
     "p2p": {"name": "Point-to-Point"},
     "container-mgmt": {"name": "Container Mgmt"},
     "hold-down": {"name": "Hold-down"},
-    # Pre-existing NetBox Role (id 6, created previously by this project's
-    # owner, not by this codebase) - matched here by exact name/slug so
-    # get_or_create finds and reuses it rather than creating a duplicate.
-    # See build_ipam_hierarchy's site_prefix handling below for why this
-    # Role exists (identifies a site's own /22 block allocation) rather
-    # than a second NetBox Aggregate object.
+    # Matched by name so get_or_create reuses the existing Role.
     "site-aggregate": {"name": "Site Aggregate"},
 }
 
-# containerlab's own Docker-managed mgmt network - what `containerlab
-# inspect` shows per-node (e.g. 172.20.20.4) - is a completely separate
-# network from this design's own fabric OOB addressing (10.0.0.128/25):
-# it's assigned to each container's eth0/Management0 by Docker's IPAM,
-# not part of the RFC1918 10.0.0.0/8 space this project otherwise uses.
-# Not nested under a new Aggregate (unlike 10.0.0.0/8) - a synthetic
-# Docker-internal network isn't a real address block this project or its
-# user actually holds, unlike the existing 100.64.6.0/24-style aggregates
-# from prior work, so forcing one in would misrepresent it.
+# Docker mgmt network, not part of the project's RFC1918 space.
 CONTAINER_MGMT_PREFIX = "172.20.20.0/24"
 
 
 def build_ipam_hierarchy(nb, site, addressing):
-    """Nest this site's IPs under real NetBox Aggregate/Prefix objects.
-
-    addressing: dict with site_prefix, production_prefix, loopback_prefix,
-    p2p_prefix (all CIDR strings), and optionally mgmt_prefix,
-    host_p2p_prefix, container_mgmt_prefix - callers omit keys their lab
-    doesn't need (e.g. this lab has no mgmt_prefix or host_p2p_prefix,
-    every node here bootstraps over the shared container mgmt network
-    instead.
-
-    Previously only bare IP addresses existed (created by build_devices'
-    _assign_ips) with no parent Prefix - NetBox's hierarchy/utilization view
-    had nothing to nest them under. This creates the 10.0.0.0/8 aggregate,
-    the site's /24 allocation, and the two /25 sub-prefixes (Production,
-    Mgmt) from the addressing plan - NetBox nests contained IPs under these
-    automatically once they exist, no per-IP change needed.
-
-    NetBox 4.x note: Prefix has no direct `site` field anymore - it uses a
-    generic `scope_type`/`scope_id` pair (confirmed live via OPTIONS on
-    /api/ipam/prefixes/), same pattern as cable terminations.
-    """
+    """Nest site IPs under NetBox Aggregate and Prefix objects."""
     rir = nb.ipam.rirs.get(slug=RIR_SLUG)
     if rir is None:
         raise RuntimeError(f"Expected existing NetBox RIR '{RIR_SLUG}' not found")
@@ -305,14 +236,7 @@ def build_ipam_hierarchy(nb, site, addressing):
 
     site_prefix_defaults = {"description": f"{site.slug} lab allocation"}
     if addressing.get("site_aggregate"):
-        # New-scheme sites identify their own
-        # block allocation via the pre-existing "Site Aggregate" NetBox
-        # Role (slug "site-aggregate") on their site-scoped Prefix - NOT
-        # a real NetBox Aggregate object. Confirmed live: NetBox rejects
-        # any Aggregate overlapping an existing one ("Aggregates cannot
-        # overlap"), and every new site's /22 is inherently covered by
-        # the existing org-wide 10.0.0.0/8 aggregate above - a second
-        # Aggregate object can never be created here.
+        # New-scheme sites: block identified by the site-aggregate Role.
         site_prefix_defaults["role"] = roles["site-aggregate"].id
 
     site_prefix = get_or_create(
@@ -341,28 +265,13 @@ def build_ipam_hierarchy(nb, site, addressing):
         )
         result["mgmt_prefix"] = mgmt_prefix
 
-    # Further split Production along the boundary the existing addressing
-    # plan already respects - loopbacks (.1, .2, .11-.15) all fall within
-    # .0/27, fabric P2P links (.32-.51) all fall within .32/27 - no IP
-    # renumbering needed, just two more nested Prefix objects so NetBox's
-    # hierarchy view separates the two kinds of address within Production.
+    # Nested Prefixes separate loopbacks from fabric P2P links.
     loopback_prefix = get_or_create(
         nb.ipam.prefixes,
         {"prefix": addressing["loopback_prefix"], "scope_type": "dcim.site", "scope_id": site.id},
         defaults={"role": roles["loopback"].id, "description": "Loopbacks"},
     )
-    # Not scoped to `site` in the lookup - unlike the prefixes above,
-    # p2p_prefix isn't always a per-site allocation: the two transit
-    # sites (us-south-01a/us-north-01a) intentionally share the same
-    # backbone p2p range (10.1.0.0/28). Same class of bug as
-    # container_mgmt_prefix below: scoping the lookup to `site.id` means
-    # the second transit site's build never finds the first's
-    # already-created object for that identical value, so it tries to
-    # `create()` a duplicate and NetBox rejects it ("Duplicate prefix
-    # found in global table") - confirmed live building the 4-site ring.
-    # `defaults` still records whichever site's build happens to create
-    # it first - the two fabric sites' own distinct per-site values
-    # (never shared with another site) are unaffected either way.
+    # Not scoped to site: transit sites share one p2p range.
     p2p_prefix = get_or_create(
         nb.ipam.prefixes,
         {"prefix": addressing["p2p_prefix"]},
@@ -377,10 +286,7 @@ def build_ipam_hierarchy(nb, site, addressing):
     result["p2p_prefix"] = p2p_prefix
 
     if "host_p2p_prefix" in addressing:
-        # Host access P2P links - a separate
-        # nested Prefix from fabric P2P above, same role, since it's a
-        # semantically different kind of link (leaf-to-host, not
-        # leaf-to-spine) even though both are /31s carved from Production.
+        # Host access P2P links, a separate nested Prefix.
         host_p2p_prefix = get_or_create(
             nb.ipam.prefixes,
             {"prefix": addressing["host_p2p_prefix"], "scope_type": "dcim.site", "scope_id": site.id},
@@ -389,21 +295,13 @@ def build_ipam_hierarchy(nb, site, addressing):
         result["host_p2p_prefix"] = host_p2p_prefix
 
     if "hold_down_prefix" in addressing:
-        # Tagged, not a device custom field -
-        # the Prefix itself is the single source of truth for this
-        # value; export_data_model.py finds it by tag, scoped to site,
-        # rather than a separately-maintained device field that could
-        # drift out of sync with this Prefix.
+        # Tagged Prefix is the source of truth; export finds it by tag.
         hold_down_tag = get_or_create(
             nb.extras.tags,
             {"slug": "hold-down-block"},
             defaults={"name": "Hold-down Block"},
         )
-        # Scoped to `site` (unlike p2p_prefix/container_mgmt_prefix
-        # above) - this value is unique per site, not shared across
-        # sites, so scoping it here is correct and must not be "fixed"
-        # to match the unscoped pattern those two use for a different
-        # reason (their values ARE shared across sites).
+        # Scoped to site: this value is unique per site.
         hold_down_prefix = get_or_create(
             nb.ipam.prefixes,
             {"prefix": addressing["hold_down_prefix"], "scope_type": "dcim.site", "scope_id": site.id},
@@ -415,14 +313,7 @@ def build_ipam_hierarchy(nb, site, addressing):
         )
         result["hold_down_prefix"] = hold_down_prefix
 
-    # container_mgmt_prefix is shared across labs (containerlab's own
-    # Docker-managed mgmt network, not a per-lab addressing choice), so it
-    # always uses the module constant unconditionally rather than reading
-    # from `addressing`. The lookup is deliberately NOT scoped to `site` -
-    # scoping it would make every additional site's build fail to find the
-    # first site's already-created object and try to `create()` a
-    # duplicate (NetBox rejects that: "Duplicate prefix found in global
-    # table"), confirmed live deploying a second site against real NetBox.
+    # Shared across labs, so never scoped to site.
     container_mgmt_prefix = get_or_create(
         nb.ipam.prefixes,
         {"prefix": CONTAINER_MGMT_PREFIX},
@@ -442,12 +333,7 @@ DEVICE_TYPE_DEFS = {
     "frr": {"model": "FRR (virtual)", "slug": "frr-virtual"},
 }
 
-# NetBox requires every Device to have a device_type (confirmed live via a
-# 400 + OPTIONS check on /api/dcim/devices/ - it's not documented anywhere
-# in this project until it was hit). This generic fallback covers devices
-# with no modeled NOS platform (currently just ztp-server) - it intentionally
-# gets no `platform` object, only a device_type, since ztp-server isn't a NOS
-# and shouldn't gain one just to satisfy this unrelated requirement.
+# Generic device type for devices with no modeled NOS platform.
 GENERIC_MANUFACTURER = {"name": "Generic", "slug": "generic"}
 GENERIC_DEVICE_TYPE = {"model": "Generic Host (virtual)", "slug": "generic-host-virtual"}
 
@@ -475,23 +361,13 @@ def _generic_device_type(nb):
 
 
 def _get_or_create_interface(nb, device, if_name, if_type="1000base-t", description=None):
-    # dcim/interfaces: the GET filter param for a device relation is
-    # "device_id", but the write serializer requires the key "device"
-    # (confirmed live via OPTIONS - "device_id" is silently dropped on
-    # POST, leaving the required "device" field unset -> 400). So the
-    # lookup and create payloads need different keys; get_or_create's
-    # generic lookup-then-merge can't express that, hence this local
-    # variant instead of nb_client.get_or_create.
+    # Lookup uses device_id, but writes need the device key.
     obj = nb.dcim.interfaces.get(device_id=device.id, name=if_name)
     if obj is None:
         obj = nb.dcim.interfaces.create(
             device=device.id, name=if_name, type=if_type, description=description or ""
         )
-    # get_or_create-style defaults-only-at-creation gap (same reasoning
-    # as _get_or_create_ip's own description reconciliation below) -
-    # re-deriving a link's description from connects_to on every run
-    # keeps it in sync with cabling changes instead of freezing whatever
-    # was there the first time this interface was created.
+    # Re-derive the description from connects_to on every run.
     elif description is not None and obj.description != description:
         obj.description = description
         obj.save()
@@ -525,14 +401,7 @@ def build_devices(nb, data, schema):
 
         device = get_or_create(nb.dcim.devices, {"name": name}, defaults=device_defaults)
 
-        # get_or_create only applies `defaults` at creation time - an
-        # existing device's platform/device_type/role never update on a
-        # later run otherwise. Confirmed live: converting leaf-02 from
-        # ceos to frr in the fixture and re-running this script left the
-        # real NetBox device silently still showing platform "ceos" -
-        # custom_fields (below) already gets this right via its own
-        # explicit .update()+.save(), device-level fields need the same
-        # explicit reconciliation.
+        # get_or_create skips defaults on existing devices, so reconcile here.
         needs_save = False
         if device.role.id != role.id:
             device.role = role.id
@@ -590,32 +459,12 @@ def build_devices(nb, data, schema):
             description = _link_description(dev_interfaces[if_name])
             interfaces[if_name] = _get_or_create_interface(nb, device, if_name, description=description)
 
-        # Stale-interface cleanup: renaming an interface (e.g. leaf-02's
-        # EthernetN -> ethN when it converted from ceos to frr) leaves
-        # the OLD interface object behind as an orphan otherwise -
-        # get_or_create's lookup-then-create can only ever add, never
-        # remove, and confirmed live this really did happen (the old
-        # "Ethernet1/2/3" objects, cables and all, were still present
-        # after the rename with no "eth1/2/3" replacement visible in a
-        # fresh export - the new interfaces WERE created, just shadowed
-        # in that read by the still-live old ones with cables attached
-        # sharing the same connects_to relationship). Loopback0/mgmt0/
-        # Vlan1-style placeholder interfaces (never listed in `dev`'s own
-        # `interfaces` dict, only ever created directly by later loopback/
-        # mgmt-IP logic below) are excluded from this cleanup by name.
+        # Remove stale interfaces; skip Loopback0/mgmt0/Vlan1 placeholders.
         PLACEHOLDER_IF_NAMES = {"Loopback0", "mgmt0", "Vlan1"}
         for existing_if in nb.dcim.interfaces.filter(device_id=device.id):
             if existing_if.name in wanted_if_names or existing_if.name in PLACEHOLDER_IF_NAMES:
                 continue
-            # Deleting the interface does NOT cascade-delete its cable
-            # via this API path - confirmed live: after deleting a stale
-            # interface with a cable attached, the *peer* interface on
-            # the other end still showed a (now-dangling) `.cable`
-            # reference, which build_cables()'s own idempotency check
-            # (checking each interface's `.cable` attribute) then
-            # mistook for "already wired", silently skipping the real
-            # replacement cable it should have created. Delete the cable
-            # explicitly first, before the interface itself.
+            # Delete the cable first; interface deletion does not cascade.
             cable_id = getattr(existing_if, "cable", None)
             if cable_id:
                 nb.dcim.cables.get(id=cable_id.id).delete()
@@ -629,13 +478,7 @@ def build_devices(nb, data, schema):
 
 
 def _get_or_create_ip(nb, address, description):
-    # get_or_create() only sets `defaults` at creation time - an IP
-    # address created before this function existed (every one of them,
-    # live) would keep an empty description forever. Found live: the OOB
-    # prefix's list view showed two bare addresses with no indication of
-    # which device/interface either belonged to, forcing a click into
-    # each one to find out. This always converges the description,
-    # whether the IP already existed or not.
+    # Always converge the description, even for pre-existing IPs.
     ip = nb.ipam.ip_addresses.get(address=address)
     if ip is None:
         return nb.ipam.ip_addresses.create(address=address, status="active", description=description)
@@ -647,15 +490,7 @@ def _get_or_create_ip(nb, address, description):
 
 def _assign_ips(nb, device, interfaces, dev):
     if "loopback" in dev:
-        # NetBox rejects setting primary_ip4 to an IP that isn't assigned to
-        # an interface on this device (confirmed live: 400 "The specified IP
-        # address (...) is not assigned to this device."). The fixture
-        # models the loopback as a bare address with no interface, so a
-        # virtual placeholder interface is created here to hang it on -
-        # this interface isn't part of the fixture's `interfaces` map and
-        # carries no cabling, so it's not exposed in the returned
-        # `interfaces` dict (nothing downstream needs it; the export
-        # reads `device.primary_ip4.address` directly, not the interface).
+        # Loopback needs an interface to be primary; use a placeholder.
         loopback_intf = _get_or_create_interface(nb, device, "loopback0", if_type="virtual")
         ip = _get_or_create_ip(nb, dev["loopback"], f"{device.name} loopback0")
         ip.assigned_object_type = "dcim.interface"
@@ -665,12 +500,7 @@ def _assign_ips(nb, device, interfaces, dev):
         device.save()
 
     if "oob_svi_ip" in dev:
-        # Previously created as a bare, unassigned IP address (a known,
-        # accepted gap) - confirmed live this
-        # left it an orphan with no way to tell which device it belonged
-        # to from the prefix's IP list. Fixed: hang it on a real Vlan1 SVI
-        # interface, matching the static startup-config's own
-        # `interface Vlan1 / ip address ...` line.
+        # Vlan1 IP is assigned to a real SVI interface.
         svi_intf = _get_or_create_interface(nb, device, "Vlan1", if_type="virtual")
         ip = _get_or_create_ip(nb, dev["oob_svi_ip"], f"{device.name} Vlan1 (OOB SVI)")
         ip.assigned_object_type = "dcim.interface"
@@ -678,10 +508,7 @@ def _assign_ips(nb, device, interfaces, dev):
         ip.save()
 
     if "mgmt_ip" in dev:
-        # containerlab's own Docker-managed mgmt network (see
-        # CONTAINER_MGMT_PREFIX) - a "mgmt0" virtual interface here is
-        # this project's own placeholder, not a real interface any
-        # platform names that way; nothing downstream cables to it.
+        # mgmt0 is a placeholder; nothing cables to it.
         mgmt_intf = _get_or_create_interface(nb, device, "mgmt0", if_type="virtual")
         ip = _get_or_create_ip(nb, dev["mgmt_ip"], f"{device.name} mgmt0 (containerlab mgmt network)")
         ip.assigned_object_type = "dcim.interface"
@@ -714,20 +541,7 @@ def build_cables(nb, data, devices):
 
             a_iface = devices[name]["interfaces"][if_name]
 
-            # Backbone-ring links intentionally cross site boundaries -
-            # the peer device may live in a different site's fixture,
-            # not this call's own `devices` dict (build_backbone_fabric_
-            # lab.py calls build_devices/build_cables once per site, in
-            # a loop, so `devices` only ever has THIS site's devices).
-            # Confirmed live: a plain `devices[peer_name]` crashed with a
-            # raw KeyError building us-central-01a's cables, since
-            # us-south-01a hadn't been processed yet. Look the peer up
-            # in NetBox directly instead - by the time every site has
-            # been processed once, every device+interface exists there
-            # regardless of which site "owns" it. If the peer site
-            # hasn't been built yet at all, skip for now: the dedup key
-            # is symmetric, so that site's own build_cables() call picks
-            # up this exact same link once it runs.
+            # Peer may belong to another site; look it up in NetBox.
             if peer_name in devices:
                 b_iface = devices[peer_name]["interfaces"][peer_if_name]
             else:
@@ -745,18 +559,7 @@ def build_cables(nb, data, devices):
                 if b_iface is None:
                     continue
 
-            # Checking only `termination_a_id=a_iface.id` (this function's
-            # original check) missed the case where a previous run had
-            # wired this exact pairing with the two interfaces landed on
-            # the opposite sides - confirmed live: a re-run hit a 400
-            # "Duplicate termination found for dcim.interface 80: cable
-            # 10" because that side-specific filter found nothing, so it
-            # tried to create a second cable on an interface NetBox
-            # itself only ever allows one cable on. Checking each
-            # interface's own `.cable` attribute directly - the same
-            # field export_data_model.py already uses to detect cabled
-            # interfaces - is side-agnostic and catches this regardless
-            # of which side either interface landed on.
+            # Check cable on each interface, so either side order matches.
             if getattr(a_iface, "cable", None) or getattr(b_iface, "cable", None):
                 continue
 

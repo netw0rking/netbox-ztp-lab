@@ -6,10 +6,7 @@ import pynetbox
 def get_client():
     nb_url = os.environ["nb_url"]
     nb = pynetbox.api(nb_url)
-    # This NetBox instance authenticates via a full "Bearer <key>.<token>"
-    # Authorization header, not NetBox's classic "Token <token>" scheme -
-    # confirmed live (a bare pynetbox token= constructor sends "Token <value>"
-    # and gets a 403). nb_token holds the complete header value already.
+    # nb_token is the complete Authorization header value.
     nb.http_session.headers["Authorization"] = os.environ["nb_token"]
     return nb
 

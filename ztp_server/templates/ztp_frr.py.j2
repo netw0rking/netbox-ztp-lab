@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-# FRR ZTP-equivalent bootstrap. No dedicated containerlab kind exists for
-# FRR (confirmed live: "frr" is not in the supported-kinds list of the
-# installed containerlab version, 0.79.0) and the frrouting/frr image
-# has no ZTP mechanism of its own - this device runs as a plain
-# `kind: linux` container, so generate_topology.py renders and binds
-# this script directly, triggered via containerlab's own `exec:` (the
-# same mechanism already used for SRLinux's own ZTP-equivalent
-# bootstrap), doing everything a real ZTP flow would.
+# FRR bootstrap, run via containerlab exec: (no FRR kind exists).
 import json
 import os
 import subprocess
@@ -15,14 +8,7 @@ import urllib.error
 import urllib.request
 
 
-# Idempotent primitives - this script must be safe to re-run on a node
-# that already got partway (or all the way) through it. Confirmed live
-# 2026-10-03: re-running the original after a failed fetch died on its
-# very first step, `ip addr add` ("Error: ipv4: Address already
-# assigned."), before ever reaching the fetch it actually needed to
-# retry. `ip addr replace` is the idempotent form (confirmed live: rc=0
-# for both an already-present and a new address); `ip link set ... up`
-# and `... master X` were confirmed live to already be safe to repeat.
+# Idempotent: safe to re-run.
 def addr(ip, dev):
     subprocess.run(["ip", "addr", "replace", ip, "dev", dev], check=True)
 
@@ -33,16 +19,7 @@ def ensure_link(name, *args):
         subprocess.run(["ip", "link", "add", name, *args], check=True)
 
 {% if oob_interface and oob_ip %}
-# No DHCP client in this minimal image - confirmed live (`which dhclient`
-# finds nothing in the frrouting/frr image). Static, same as this
-# project's other non-ZTP-capable devices (ztp-server, SRLinux's own OOB
-# bootstrap step).
-#
-# Waited for, not assumed present: exec: commands can fire before
-# containerlab finishes attaching this node's veth links (the same race
-# ztp-server's own entrypoint.sh already documents and guards against
-# for its own OOB interface) - confirmed live here too, as a real crash
-# ("Cannot find device") on a run where the exec fired first.
+# Static OOB address; wait for the interface to appear first.
 for _ in range(30):
     if os.path.exists("/sys/class/net/{{ oob_interface }}"):
         break
@@ -52,18 +29,7 @@ subprocess.run(["ip", "link", "set", "{{ oob_interface }}", "up"], check=True)
 {% endif %}
 
 {% if fabric_interfaces %}
-# Fabric-facing point-to-point addresses, from NetBox's own "fabric"-role
-# interfaces - a plain Linux container gets no addressing on these at
-# all otherwise (no ZTP-equivalent for them the way oob_interface gets
-# one above), and the underlay eBGP config below peers by IP, not
-# unnumbered, so without this the session never even attempts a TCP
-# connection to its peer. Same interface-existence wait as the OOB step,
-# but NetBox's own data model records every fabric neighbor this device
-# could have (e.g. both spines), not just the ones actually wired into
-# whatever reduced checkpoint topology is deployed today - so a missing
-# interface here is a normal, expected state (an unwired link on a real
-# device), not fatal: skip it and move on rather than crash the whole
-# bootstrap over a link that was never meant to exist in this topology.
+# Fabric addresses; skip links not wired in this topology.
 {% for if_name, if_ip in fabric_interfaces %}
 for _ in range(30):
     if os.path.exists("/sys/class/net/{{ if_name }}"):
@@ -78,25 +44,14 @@ else:
 {% endif %}
 
 {% if loopback %}
-# A plain Linux container has no NOS-style dedicated loopback construct
-# (cEOS's Loopback0 / SRLinux's system0) - a Linux "dummy" interface is
-# the standard equivalent, giving this device a stable address for BGP
-# router-id and (below) the VXLAN VTEP source, independent of any single
-# physical link's own up/down state.
+# Dummy interface as the stable loopback and VTEP source.
 ensure_link("lo-vtep", "type", "dummy")
 addr("{{ loopback }}", "lo-vtep")
 subprocess.run(["ip", "link", "set", "lo-vtep", "up"], check=True)
 {% endif %}
 
 {% if vrf_name and l3vni %}
-# Routed EVPN symmetric-IRB access - a second,
-# independent overlay from the L2 bridged one above (this device never
-# has both). The kernel-side VRF/L3VNI plumbing has to exist before
-# frr.conf is loaded below: the per-VRF `router bgp ... vrf {{ vrf_name }}`
-# instance only binds successfully once zebra can see a real VRF device
-# by that name, the same way advertise-all-vni (already in this device's
-# underlay bgp instance) only discovers a VNI once its vxlan netdev
-# exists in the kernel.
+# Routed EVPN VRF setup; must exist before frr.conf loads.
 ensure_link("{{ vrf_name }}", "type", "vrf", "table", "{{ l3vni }}")
 subprocess.run(["ip", "link", "set", "{{ vrf_name }}", "up"], check=True)
 l3vni_if = "vxlan{{ l3vni }}"
@@ -112,14 +67,7 @@ subprocess.run(["ip", "link", "set", l3vni_bridge_if, "master", "{{ vrf_name }}"
 subprocess.run(["ip", "link", "set", l3vni_if, "up"], check=True)
 subprocess.run(["ip", "link", "set", l3vni_bridge_if, "up"], check=True)
 
-# Host-facing routed P2P links (NetBox's "access"-role interfaces) - each
-# one gets its own address (no ZTP-equivalent for these either, same gap
-# fabric_interfaces above already fills for underlay links) and is
-# enslaved directly into the VRF: a routed point-to-point link needs no
-# bridge/IRB of its own the way a shared bridged host subnet would, the
-# connected route it creates is redistributed into the VRF's own
-# "address-family ipv4 unicast / redistribute connected" (frr.conf,
-# rendered below) and from there into EVPN type-5 the same way.
+# Host-facing routed links, enslaved into the VRF.
 {% for if_name, if_ip in access_interfaces %}
 for _ in range(30):
     if os.path.exists("/sys/class/net/{{ if_name }}"):
@@ -134,18 +82,7 @@ subprocess.run(["ip", "link", "set", "{{ if_name }}", "up"], check=True)
 serial = "{{ serial }}"
 url = "http://{{ server_host }}/ztp/config/" + serial
 
-# Same generous, widened retry budget as SRLinux's own bootstrap uses,
-# for the same reason - exec: commands run as soon as containerlab
-# considers this node "ready", which guarantees neither that
-# mgmt-switch/ztp-server have finished their own independent boot yet,
-# nor that this host (4 CPUs, observed load average up to 30+ during
-# redeploys) has caught up. Widened from 60 to 180 attempts (10 to 30
-# minutes) after the per-site ZTP servers plan: confirmed live, 4
-# devices exhausted the old budget and gave up before their own site's
-# ztp-server had even gotten its own OOB IP assigned - this plan's own
-# new per-site servers/OOB interfaces meaningfully lengthened the
-# deploy's total exec: queue (real observed delay was ~17 minutes on a
-# 23-node deploy), so 10 minutes no longer has real margin.
+# Retry the fetch; exec: may run before the server is ready.
 config = None
 last_error = None
 for attempt in range(180):
@@ -162,34 +99,7 @@ if config is None:
 with open("/etc/frr/frr.conf", "w") as f:
     f.write(config)
 
-# bgpd is already running at this point - configs/frr-daemons (bind-
-# mounted over the image's own default, which ships bgpd=no) sets
-# bgpd=yes before the container ever boots, specifically so this step
-# never needs to enable a not-yet-running daemon. Root-caused live: the
-# original approach here (sed the daemons file live, then
-# `frrinit.sh restart`) tore down and re-exec'd the whole daemon set
-# from inside the running container, which in this image's own process
-# model killed the container's own PID 1 with it - Docker's restart
-# policy then recreated the container from scratch, discarding the
-# containerlab-wired veth links (a plain container restart never
-# restores them), which is fatal for a node whose whole job is being on
-# the fabric. `vtysh -f` instead loads the fetched config directly into
-# the already-running daemons, the same as pasting it into a `vtysh`
-# session - no daemon start/stop, no restart, no container death.
-#
-# `vtysh -f` exits 0 even when lines fail to apply, so check=True on it
-# alone never catches a bad config - confirmed live 2026-10-03. Its
-# "processing failure: 11" on every run here was pure noise from this
-# image shipping no /etc/frr/vtysh.conf (confirmed live: even a file
-# containing only "!" fails without it, and the real frr.conf dry-runs
-# clean once it exists). With vtysh.conf present, `vtysh -C` (dry-run)
-# exits non-zero on a genuinely bad line (confirmed live: rc=2, naming
-# the line), so validate first and fail loudly before applying.
-# Wait for FRR's daemons. This script starts the moment the container
-# does (detached exec:), and the SSH-enabled image runs ssh-keygen/sshd
-# before FRR's own docker-start - confirmed live 2026-10-04: bbr-04's
-# `vtysh -f` ran first, failed "failed to connect to any daemons", and
-# the script died before creating users.
+# Wait for daemons, then validate and load frr.conf with vtysh.
 for _ in range(90):
     if subprocess.run(["vtysh", "-c", "show version"], capture_output=True).returncode == 0:
         break
@@ -202,26 +112,7 @@ subprocess.run(["vtysh", "-C", "-f", "/etc/frr/frr.conf"], check=True)
 subprocess.run(["vtysh", "-f", "/etc/frr/frr.conf"], check=True)
 
 {% if sr_policies %}
-# pathd/vtysh-f crash workaround - confirmed live, repeatedly, with a genuinely fresh pathd each
-# time: a first-time bulk `vtysh -f` delivery of `segment-routing
-# traffic-eng` content containing a `policy`/`candidate-path` crashes
-# pathd outright ("read returned EOF"), even after the srv6/traffic-eng
-# stanza merge (frr_config.j2) removed the unrelated two-stanza bug. The
-# exact same commands succeed reliably as individual `vtysh -c`
-# invocations instead of one `-f` file load - this is a genuine FRR/vtysh
-# interaction bug in this image (quay.io/frrouting/frr:10.5.1), not a
-# config-content defect. watchfrr's own restart-on-crash path is also
-# unreliable here (observed repeatedly failing "Cannot stop pathd: pid N
-# not running" in a loop rather than respawning it), so this restarts
-# pathd directly and re-applies just the traffic-eng portion via one
-# `vtysh` call with multiple `-c` flags, mirroring the proven-safe manual
-# recovery used live during testing.
-#
-# Only restarted if it's actually dead - on a re-run, pathd may well be
-# alive from the previous run, and a second instance would fail to bind
-# its vty. Checked via pidfile + /proc rather than `pgrep -x pathd`,
-# which confirmed live returns nothing in this image even with pathd
-# running (/proc/<pid>/comm reads "pathd" fine).
+# Restart pathd if dead, then apply SR policies via vtysh -c.
 def _pathd_alive():
     try:
         with open("/var/run/frr/pathd.pid") as f:
@@ -236,11 +127,7 @@ if not _pathd_alive():
     for _pidfile in ("/var/run/frr/pathd.pid", "/var/run/frr/pathd.vty"):
         if os.path.exists(_pidfile):
             os.remove(_pidfile)
-    # "-s /bin/sh" is required: this image's frr user has shell
-    # /sbin/nologin (confirmed live: `su frr -c ...` fails outright with
-    # "This account is not available" - the account itself is fine, su's
-    # own shell check just refuses a nologin shell unless one is
-    # explicitly forced).
+    # -s /bin/sh: the frr user's shell is nologin.
     subprocess.run(
         ["su", "-s", "/bin/sh", "frr", "-c", "/usr/lib/frr/pathd -d -F traditional -A 127.0.0.1"],
         check=True,
@@ -271,12 +158,7 @@ subprocess.run(vtysh_cmd, check=True)
 {% endif %}
 
 {% if overlay_vni and overlay_vlan_id and overlay_test_ip and loopback %}
-# Confirmed live: FRR's zebra auto-discovers the VNI-to-VXLAN-interface
-# mapping from the kernel's own netlink state once these netdevs exist -
-# no separate FRR-side "vni" list needed beyond advertise-all-vni
-# (already in frr_config.j2's rendered address-family l2vpn evpn block).
-# A short wait first so zebra is fully up before these show up in the
-# kernel for it to notice.
+# zebra discovers the VNI from the kernel's vxlan netdev.
 time.sleep(3)
 vxlan_if = "vxlan{{ overlay_vni }}"
 bridge_if = "br{{ overlay_vlan_id }}"
@@ -291,11 +173,7 @@ addr("{{ overlay_test_ip }}", bridge_if)
 subprocess.run(["ip", "link", "set", vxlan_if, "up"], check=True)
 subprocess.run(["ip", "link", "set", bridge_if, "up"], check=True)
 
-# Real, L2-bridged test hosts (NetBox's "overlay"-role interfaces, e.g.
-# leaf-02's eth4 to host-02) join this same bridge alongside the VXLAN
-# device itself - anything bridged in here lands in the same
-# VXLAN-stretched broadcast domain as this leaf's own overlay_test_ip
-# and every other leaf's overlay_test_ip/hosts sharing this VNI.
+# Overlay host ports join the same bridge as the VXLAN device.
 {% for if_name in overlay_interfaces %}
 for _ in range(30):
     if os.path.exists("/sys/class/net/{{ if_name }}"):
@@ -307,13 +185,7 @@ subprocess.run(["ip", "link", "set", "{{ if_name }}", "up"], check=True)
 {% endif %}
 
 
-# SSH/VTY logins.
-# The image (images/frr/Dockerfile) runs sshd; users.yaml's logins come
-# from the ztp-server, since frr.conf can't hold local users. Each is a
-# Linux account whose login shell is vtysh, in the frrvty group (which
-# owns the daemons' .vty sockets) - verified live 2026-10-04: a key login
-# lands straight at the "<hostname>#" FRR prompt, not a Linux shell.
-# Last in this script on purpose: logins can never block routing config.
+# SSH/VTY logins for users.yaml; fetched last so routing is never blocked.
 users_url = "http://{{ server_host }}/ztp/users/" + serial
 users = None
 for attempt in range(30):
@@ -346,10 +218,7 @@ for user in users:
     if user["auth"] == "password":
         subprocess.run(["chpasswd"], input=f"{name}:{user['value']}\n", text=True, check=True)
     elif user["auth"] == "ssh_key":
-        # busybox adduser -D leaves the account locked ("!"), and OpenSSH
-        # refuses even a key login for a locked account (confirmed live:
-        # "Permission denied (publickey,...)" until this) - "*" means no
-        # usable password without locking the account.
+        # Unlock the account so OpenSSH accepts key login.
         if _shadow_field(name).startswith("!"):
             with open("/etc/shadow") as f:
                 lines = f.readlines()
@@ -363,6 +232,5 @@ for user in users:
         with open(f"{ssh_dir}/authorized_keys", "w") as f:
             f.write(user["value"].strip() + "\n")
         os.chmod(f"{ssh_dir}/authorized_keys", 0o600)
-        # busybox adduser -G sets frrvty as the primary group; there is no
-        # per-user group to chown to.
+        # busybox adduser -G sets the primary group.
         subprocess.run(["chown", "-R", name, ssh_dir], check=True)

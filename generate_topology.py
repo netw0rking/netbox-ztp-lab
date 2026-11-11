@@ -13,108 +13,45 @@ from schema.validate import validate_data_model
 from ztp_server.render import _env as TEMPLATE_ENV
 
 REPO_ROOT = Path(__file__).parent
-# The separate, private netbox-ztp-lab-secrets repo - never a subdirectory
-# of this repo, never committed here. Cloned once, out of band, to this
-# fixed sibling path (matching where this repo's own plain checkout
-# already lives). The one-time deploy-key setup this needs is done out of
-# band. Overridable via env var
-# for anyone whose checkout layout differs.
+# Private secrets repo, cloned out of band. Override with env var.
 SECRETS_REPO_PATH = Path(
     os.environ.get("SECRETS_REPO_PATH", str(Path.home() / "git" / "netbox-ztp-lab-secrets"))
 )
 
 
-# Genuine DHCP-triggered ZTP is unreachable for SRLinux in containerlab -
-# confirmed live that its ztpd daemon never runs at all (not started by
-# systemd - PID 1 is `tini`, not systemd - and absent from sr_app_mgr's
-# own process manifest). Real ZTP is gated by a GRUB-level auto-boot flag
-# read from the kernel command line, a hardware/VM boot-time mechanism
-# with no per-container equivalent (see ztp_srlinux.py.j2's own header
-# comment for the full root cause). Fixed by rendering that exact
-# template directly here and triggering it via containerlab's own
-# `exec:` directive instead - same fetch-and-apply outcome, different
-# trigger. ZTP_SERVER_HOST mirrors main.py's own default of the same name.
+# SRLinux bootstrap runs via containerlab exec:, not real ZTP.
 ZTP_SERVER_HOST = "10.0.0.130"
-# us-east-01a's own OOB space - the boundary that scopes the last-
-# usable-IP derivation below away from this lab's devices. Note: us-east-01a's own server IP
-# (10.0.0.130) is not its own subnet's last usable address, and never
-# will be - it predates this convention and stays as-is.
+# us-east-01a OOB network.
 US_EAST_01A_OOB_NETWORK = ipaddress.ip_network("10.0.0.0/24")
-# Fallback for devices with no OOB interface of their own. containerlab
-# injects a working /etc/hosts entry for every node into every other
-# node, resolvable on the shared containerlab Docker mgmt network -
-# confirmed live (`docker exec <any-node> cat /etc/hosts` showed this
-# hostname mapped to ztp-server's container-mgmt IP). This is us-east-
-# 01a's own fallback only, for a device on that lab with no OOB
-# interface of its own. Every backbone-fabric-lab site now has its own
-# OOB network and its own ztp-server, so every device there
-# always has a real oob_interface and never reaches this branch.
+# Fallback for us-east-01a devices with no OOB interface.
 ZTP_SERVER_CONTAINER_NAME = "ztp-server-us-east-01a"
 
 
 def site_server_host(oob_ip):
-    """Last usable address of oob_ip's own subnet - the static address
-    every backbone-fabric-lab site's own ztp-server device is given in
-    NetBox, independently derived
-    here by every other device in that same site."""
+    """Last usable address of the oob_ip subnet."""
     network = ipaddress.ip_interface(oob_ip).network
     return str(network.broadcast_address - 1)
 SRLINUX_PYTHON = "/opt/srlinux/python/virtual-env/bin/python3"
 SRLINUX_BOOTSTRAP_CONTAINER_PATH = "/tmp/ztp_bootstrap.py"
 FRR_BOOTSTRAP_LOG_PATH = "/tmp/ztp_bootstrap.log"
-# Upstream FRR image (NetBox vendor_image, or the platform default) ->
-# this repo's SSH-enabled build of the same FRR version
-# (images/frr/Dockerfile). Upstream images have no sshd, so without this
-# no users.yaml login works on any FRR node.
+# Upstream FRR image -> this repo's SSH-enabled build.
 FRR_SSH_IMAGES = {
-    "frrouting/frr:latest": "netbox-ztp-lab-frr:8.4.1",  # Docker Hub, frozen at 8.4.1
+    "frrouting/frr:latest": "netbox-ztp-lab-frr:8.4.1",
     "quay.io/frrouting/frr:10.5.1": "netbox-ztp-lab-frr:10.5.1",
 }
-# frrouting/frr's own image ships python3 (confirmed live: no curl, but
-# wget and python3 are both present) - used here instead of a shell
-# script for the same structured-retry-logic reasons SRLinux's bootstrap
-# already uses Python over bash.
+# Bootstrap script in Python, for retry logic.
 FRR_BOOTSTRAP_CONTAINER_PATH = "/tmp/ztp_bootstrap.py"
-# Bind-mounted over the image's own default /etc/frr/daemons (bgpd=no)
-# so bgpd is already running from first boot - see configs/frr-daemons'
-# own header comment for why this has to happen before container start
-# rather than being toggled live by ztp_bootstrap.py.
+# Bind-mounted so bgpd runs from first boot.
 FRR_DAEMONS_HOST_PATH = REPO_ROOT / "configs" / "frr-daemons"
 
-# Bound instead of FRR_DAEMONS_HOST_PATH for role == "bbr" devices only -
-# ring BBRs need isisd actually running as soon as they get ANY IS-IS
-# config (the `router isis 1` block in frr_config.j2), which the
-# plain daemons file never enables (isisd=no, always). Gated on role
-# alone, not on srv6_locator being set - confirmed live: the ring
-# deploy (plain IS-IS + multihop EVPN, no SRv6 yet) failed "show isis
-# neighbor" with "isisd is not running" under the plain daemons file.
+# Daemons file for bbr devices (isisd enabled).
 FRR_DAEMONS_BBR_HOST_PATH = REPO_ROOT / "configs" / "frr-daemons-bbr"
 
-# No dedicated "frr" containerlab kind exists (confirmed live against
-# containerlab 0.79.0's own supported-kinds list) - FRR runs as a plain
-# "linux" kind container using the frrouting/frr image directly (see
-# PLATFORM_IMAGE below), the same kind ztp-server itself uses.
+# FRR runs as a plain linux-kind container.
 PLATFORM_KIND = {"ceos": "arista_ceos", "srlinux": "nokia_srlinux", "frr": "linux", "linux": "linux"}
 
-# vendor_image has no NetBox field to live in (Tasks 3-4 never gave it one -
-# confirmed live: the real NetBox export has no vendor_image
-# on any device, since it's deployment/container metadata, not inventory
-# data). This is the source of truth for container images; dev.get(...) is
-# checked first only so the canonical test fixture's explicit values (which
-# match this table) keep working unchanged.
-#
-# ceos is pinned to 4.32.0F, not the original 4.28.8M - confirmed live
-# during live testing that 4.28.8M's front-panel interfaces
-# never register with EOS's own Sysdb/Fru layer at all (visible at the
-# kernel level, invisible to `show interfaces`) on a host running cgroups
-# v2, which containerlab/cEOS's own docs document as a hard requirement
-# for any cEOS release before 4.32.0F. 4.32.0F+ auto-detects cgroups v1/v2
-# and needs no workaround. This specific image tag (harsha258/ceos) is an
-# unofficial third-party republish, not Arista's own registry - it was
-# used here only because the user explicitly accepted that provenance
-# risk after being told about it; replace with an official
-# arista.com-sourced 4.32.0F+ image if/when one is imported the same way
-# 4.28.8M originally was (see README).
+# Source of truth for container images.
+# ceos pinned to 4.32.0F for cgroups v2 hosts.
 PLATFORM_IMAGE = {
     "ceos": "harsha258/ceos:4.32.0F",
     "srlinux": "ghcr.io/nokia/srlinux:latest",
@@ -122,12 +59,7 @@ PLATFORM_IMAGE = {
     "linux": "netbox-ztp-lab-ztp-server:latest",
 }
 
-# "host" role devices have no
-# "platform" field at all (they're not a NOS - same shape as ztp-server),
-# so they'd otherwise silently fall through PLATFORM_IMAGE's own "linux"
-# default straight to ztp-server's own image. alpine's busybox `ip` and
-# `ping` applets are enough for the P2P-routed and VXLAN-bridged
-# connectivity tests these devices exist for.
+# Host devices have no platform; set the image explicitly.
 HOST_IMAGE = "alpine:latest"
 
 IDENTITY_BIND_PATH = {
@@ -140,39 +72,7 @@ CEOS_ETHERNET_RE = re.compile(r"^Ethernet(\d+)$")
 
 
 def clab_endpoint_name(if_name, platform, role=None, dev_name=None):
-    """Translate a device's real NOS interface name to the name
-    containerlab expects as a link endpoint, where the two differ.
-
-    arista_ceos: containerlab's convention for this kind is ethN at the
-    veth/kernel level - cEOS's own boot-time Fru agent watches for kernel
-    devices literally named ethN and remaps them to EthernetN internally.
-    Confirmed live: an isolated 2-node cEOS link named "eth1" in the
-    topology file registered as "Ethernet1 is up, line protocol is up
-    (connected)"; the same link named "Ethernet1" directly (this
-    function's previous behavior - just passing the real interface name
-    through unchanged) left Fru's own enumeration log showing only
-    eth0/management, and the front-panel port never appeared in
-    `show interfaces status` even across a container restart with the
-    link already attached. NetBox interface names for cEOS devices are
-    always the plain "EthernetN" form (no sub-interfaces in this data
-    model), so the digits carry through unchanged.
-    nokia_srlinux: e1-1/e1-2/... already IS containerlab's expected
-    endpoint convention for this kind (it matches the real interface
-    name directly), so no translation is needed or applied.
-    mgmt-switch (ovs-bridge kind): every port on every ovs-bridge node in
-    one topology file attaches directly into the ROOT network namespace,
-    not a per-node namespace the way every other kind gets - confirmed
-    live: two different mgmt-switches each declaring a port named
-    "Ethernet2" collided outright ("Root network namespace endpoint
-    "Ethernet2" defined by multiple nodes"), the first time more than one
-    mgmt-switch was ever deployed at once (this repo had exactly one,
-    ever, until this plan's per-site ztp-servers added 4 more). A short,
-    deterministic hash of (device name, interface name) is globally
-    unique across the whole topology regardless of how many sites reuse
-    the same port-numbering convention, and comfortably fits Linux's
-    IFNAMSIZ limit - the same approach clab_node_name already uses for
-    the node name itself.
-    """
+    """Map a NOS interface name to its containerlab endpoint name."""
     if role == "mgmt-switch":
         digest = hashlib.sha1(f"{dev_name}:{if_name}".encode()).hexdigest()[:8]
         return f"eth-{digest}"
@@ -183,33 +83,15 @@ def clab_endpoint_name(if_name, platform, role=None, dev_name=None):
     return if_name
 
 
-# Linux kernel netdev name limit (IFNAMSIZ 16, minus the null terminator).
+# Max Linux netdev name length (IFNAMSIZ - 1).
 OVS_BRIDGE_NAME_MAX = 15
 
 
 def clab_node_name(name, role):
-    """The name containerlab uses for this device, both as the `nodes:`
-    mapping key and in every `links:` endpoint referencing it - normally
-    identical to the real NetBox device name, except for ovs-bridge-kind
-    devices (role "mgmt-switch"), where the node name literally IS the
-    real Linux kernel interface name Open vSwitch creates for it.
-    Confirmed live: `mgmt-switch-us-east-01a` (24 chars) failed every
-    deploy with "failed to query port mgmt-switch-us-east-01a: Invalid
-    argument" / "could not add network device ... to ofproto (Invalid
-    argument)" - a Linux IFNAMSIZ (15-character) rejection, nothing to do
-    with the host's OVS install. containerlab's own docs confirm there is
-    no separate bridge-name field to set instead - the node name and the
-    OVS bridge name are the same thing.
-    """
+    """Containerlab node name; long mgmt-switch names are hashed."""
     if role != "mgmt-switch" or len(name) <= OVS_BRIDGE_NAME_MAX:
         return name
-    # sha1, not a hand-rolled abbreviation: this project's own naming
-    # convention has every site share a "mgmt-switch-us-" prefix, so a
-    # plain truncation would collide across every site's mgmt-switch (see
-    # test_clab_node_name_does_not_collide_across_similar_site_names) -
-    # deterministic and collision-safe regardless of what naming
-    # convention future sites use, with no knowledge of that convention
-    # needed here.
+    # Short deterministic name for ovs-bridge nodes.
     digest = hashlib.sha1(name.encode()).hexdigest()[:8]
     return f"ovsbr-{digest}"
 
@@ -239,28 +121,17 @@ def build_links(devices):
     return links
 
 
-# FRR has no identity-bind mechanism of its own (no hardware-serial ZTP
-# concept the way IDENTITY_BIND_PATH's other two platforms do - cEOS's
-# ceos-config file, SRLinux's chassis_id_suffix file) - its serial is
-# baked directly into its own rendered bootstrap script's content
-# instead (see the "frr" branch below), so it never needs an entry in
-# IDENTITY_BIND_PATH itself, only in this set that gates which devices
-# this whole function processes at all.
+# Gates which devices get bootstrapped. FRR serial is in the script.
 BOOTSTRAPPABLE_PLATFORMS = set(IDENTITY_BIND_PATH) | {"frr"}
 
 
-# Which containerlab lab each NetBox site belongs to. us-east-01a and the
-# backbone-fabric lab are two completely separate labs - one topology
-# file (and one containerlab deploy/destroy) each, never one combined
-# file. Until 2026-10-04 this script wrote both into a single
-# clos-fabric.clab.yml, so every redeploy of one lab also tore down and
-# rebuilt the other.
+# NetBox site -> containerlab lab. One topology file per lab.
 LAB_SITES = {
     "us-east-01a": ("us-east-01a",),
     "backbone-fabric": (
         "us-central-01a",
         "us-west-01a",
-        # ladder backbone POPs, R1..R10 (one bbr each)
+        # ladder backbone POPs, R1..R10
         "us-central-02a",
         "us-east-02a",
         "us-north-02a",
@@ -273,12 +144,7 @@ LAB_SITES = {
         "us-west-05a",
     ),
 }
-# Each lab's own containerlab mgmt network, so the two never share
-# Docker's address pool. us-east-01a derives its subnet from its pinned
-# mgmt_ip values below (the original "clab" network, unchanged);
-# backbone-fabric pins none, so it gets a dedicated network here.
-# ipv6-subnet is explicit because containerlab would otherwise reuse its
-# default 3fff:172:20:20::/64, already claimed by "clab".
+# Per-lab containerlab mgmt network, avoids Docker pool overlap.
 LAB_MGMT = {
     "backbone-fabric": {
         "network": "clab-backbone-fabric",
@@ -287,15 +153,12 @@ LAB_MGMT = {
     },
 }
 SITE_LAB = {site: lab for lab, sites in LAB_SITES.items() for site in sites}
-# Every device name ends in its NetBox site slug (<role>-<nn>-<site>,
-# e.g. bbr-01-us-central-01a) - the export carries no per-device site
-# field, so the site is read from the name.
+# Site comes from the device name suffix.
 DEVICE_SITE_RE = re.compile(r"-([a-z]{2}-[a-z]+-\d{2}[a-z])$")
 
 
 def split_devices_by_lab(devices):
-    """{lab name: {device name: device}}. Raises on a device whose site
-    isn't mapped to a lab, or a connects_to cable between two labs."""
+    """Group devices by lab. Raises on unmapped sites or cross-lab cables."""
     labs = {}
     device_lab = {}
     for name, dev in devices.items():
@@ -316,9 +179,7 @@ def split_devices_by_lab(devices):
     return labs
 
 
-# us-east-01a's DHCP settings, carried over verbatim from the original
-# static dhcp/dnsmasq.conf - the only site with real DHCP-ZTP clients
-# (its cEOS leafs). Every other site's server serves no DHCP at all.
+# us-east-01a DHCP settings. Only site with DHCP-ZTP clients.
 US_EAST_01A_DHCP_RANGE = "10.0.0.140,10.0.0.199,255.255.255.128,12h"
 US_EAST_01A_DHCP_ROUTER = "10.0.0.129"
 # Platforms that really DHCP for ZTP (FRR is bootstrapped via exec:).
@@ -334,11 +195,7 @@ def _oob_ip(dev):
 
 
 def write_dnsmasq_configs(devices, output_dir):
-    """Render one dnsmasq config per "server" role device, scoped to its
-    own OOB subnet. Confirmed live 2026-10-03: every per-site ztp-server
-    was loading the single static dhcp/dnsmasq.conf, offering
-    us-east-01a's 10.0.0.140-199 range on its own unrelated subnet.
-    Returns {server name: rendered file Path}."""
+    """Render a dnsmasq config per server device. Returns {name: Path}."""
     output_dir = Path(output_dir)
     template = TEMPLATE_ENV.get_template("dnsmasq.conf.j2")
     paths = {}
@@ -396,34 +253,13 @@ def write_identity_files(devices, output_dir):
 
             file_path = device_dir / filename
             file_path.write_text(content)
-            # Absolute path: containerlab resolves relative bind paths
-            # against the topology file's own directory, not the CWD the
-            # script ran from - confirmed live (a naive path here produced
-            # a doubled "topology/topology/..." lookup and a deploy
-            # failure). topology/ is generated, gitignored output, never
-            # expected to be portable across hosts, so an absolute path
-            # is the robust choice.
+            # containerlab resolves relative bind paths from the topology dir.
             binds[name] = [f"{file_path.resolve()}:{IDENTITY_BIND_PATH[platform]}"]
         else:
             binds[name] = []
 
         if platform == "srlinux":
-            # See this module's ZTP_SERVER_HOST comment above - genuine
-            # DHCP-triggered ZTP never reaches this script for SRLinux, so
-            # it's rendered and bound in here, triggered via `exec:`
-            # instead of relying on ztpd to ever fetch/run it itself.
-            #
-            # Real ZTP would also be what assigns this device's OOB-facing
-            # interface an IP in the first place (via its own DHCP client) -
-            # since that daemon never runs, the interface has no address at
-            # all otherwise. Confirmed live: the very first version of this
-            # exec: bootstrap failed every one of its 10 retries to reach
-            # ztp-server, because e1-1 had never been given an address by
-            # anything. Fixed the same way ztp-server's own OOB IP is
-            # assigned (a static address, sourced from NetBox rather than
-            # DHCP) - find this device's oob-role interface and give the
-            # script its name + address so it can configure it via sr_cli
-            # before ever attempting to fetch anything.
+            # Rendered and bound here, run via exec: (no ZTP daemon).
             oob_interface = oob_ip = None
             for if_name, intf in dev.get("interfaces", {}).items():
                 if intf.get("role") == "oob" and intf.get("ip"):
@@ -440,39 +276,18 @@ def write_identity_files(devices, output_dir):
             exec_cmds[name] = [f"{SRLINUX_PYTHON} {SRLINUX_BOOTSTRAP_CONTAINER_PATH}"]
 
         elif platform == "frr":
-            # No dedicated containerlab kind, no ZTP mechanism of its own,
-            # no DHCP client in the image - same "exec:-triggered
-            # bootstrap does everything" shape as SRLinux above, but the
-            # device's serial is baked directly into the rendered script
-            # itself (no chassis-identity file/API to inject it via, the
-            # way cEOS's ceos-config / SRLinux's chassis_id_suffix work) -
-            # see ztp_frr.py.j2's own header comment.
+            # Serial is baked into the rendered bootstrap script.
             oob_interface = oob_ip = None
             fabric_interfaces = []
-            # "overlay" role: an L2-bridged host-facing port (leaf-02's
-            # eth4 - see the L2 branch in ztp_frr.py.j2), just needs
-            # enslaving into the existing VXLAN bridge, no address of its
-            # own. "access" role: a routed EVPN Type-5 host-facing P2P
-            # link (leaf-06/07's eth4), needs its own address AND
-            # enslaving into vrf_name - see the L3VNI branch there.
+            # overlay: L2 host port, enslaved to the VXLAN bridge.
+            # access: routed host port, needs an address and a VRF.
             overlay_interfaces = []
             access_interfaces = []
             for if_name, intf in dev.get("interfaces", {}).items():
                 if intf.get("role") == "oob" and intf.get("ip"):
                     oob_interface, oob_ip = if_name, intf["ip"]
                 elif intf.get("role") in ("fabric", "backbone") and intf.get("ip"):
-                    # "backbone" (ring) interfaces need the exact same
-                    # `ip addr add` treatment as "fabric" ones - both are
-                    # numbered P2P links, just without per-link BGP
-                    # peering (that's the actual distinction rendered in
-                    # frr_config.j2, which reads role directly and is
-                    # unaffected by this list). Confirmed live: after
-                    # export_data_model.py started correctly classifying
-                    # ring links as "backbone", they matched none of
-                    # this loop's four branches at all, so ztp_frr.py.j2
-                    # never assigned them an address - IS-IS hellos (and
-                    # even a plain ping) had no chance over an unnumbered
-                    # link.
+                    # Ring links are numbered like fabric links.
                     fabric_interfaces.append((if_name, intf["ip"]))
                 elif intf.get("role") == "overlay":
                     overlay_interfaces.append(if_name)
@@ -508,22 +323,7 @@ def write_identity_files(devices, output_dir):
             binds[name].append(f"{bootstrap_path.resolve()}:{FRR_BOOTSTRAP_CONTAINER_PATH}")
             daemons_path = FRR_DAEMONS_BBR_HOST_PATH if dev.get("role") == "bbr" else FRR_DAEMONS_HOST_PATH
             binds[name].append(f"{daemons_path.resolve()}:/etc/frr/daemons")
-            # Detached via setsid, not a foreground exec:. containerlab
-            # runs exec: synchronously inside the worker that creates the
-            # node, and this bootstrap retries for up to 30 minutes until
-            # its site's ztp-server answers - so a foreground run blocks
-            # the very workers that would go on to create that server.
-            # Confirmed live 2026-10-04: a backbone-fabric deploy stalled
-            # at 9/22 nodes, near-zero load, with ESRs waiting on a
-            # ztp-server-us-central-01a that no free worker could create;
-            # the "~17 min exec queue" PR #44 widened the retry budget for
-            # was this same stall. Detached, exec: returns immediately
-            # (verified live: 0.13s, process survives and completes) and
-            # the bootstrap - idempotent since PR #45 - finishes on its
-            # own once its server is up. Results land in
-            # /tmp/ztp_bootstrap.log inside the node, not the deploy log.
-            # (Daemon restarts are still never done here - see
-            # ztp_frr.py.j2's `vtysh -f` comment for why that killed PID 1.)
+            # Detached so exec: does not block the node worker.
             exec_cmds[name] = [
                 f"sh -c 'setsid python3 {FRR_BOOTSTRAP_CONTAINER_PATH} > {FRR_BOOTSTRAP_LOG_PATH} 2>&1 &'"
             ]
@@ -556,40 +356,14 @@ def generate_topology(data, output_path, identity_dir, lab_name="us-east-01a"):
             node["binds"] = identity_binds[name]
         if name in srlinux_exec_cmds:
             node["exec"] = srlinux_exec_cmds[name]
-        # ZTP'd cEOS devices (spine/leaf's cEOS members - identified by
-        # having an identity bind, same set the original BBR work targeted)
-        # need containerlab to NOT write its own default startup-config,
-        # or real EOS never enters ZeroTouch mode at all - confirmed live
-        # during live testing (containerlab's docs literally
-        # call this out as the flag for "Zero-Touch Provisioning labs").
-        # mgmt-switch is excluded even though it's also cEOS: it has no
-        # identity bind (not ZTP'd) and needs its real static config.
+        # Suppress startup-config so cEOS enters ZTP mode.
         if name in identity_binds and platform == "ceos":
             node["suppress-startup-config"] = True
-        # mgmt-switch is a pure L2 forwarding plane, nothing more -
-        # containerlab's native `ovs-bridge` kind covers that with no OS/
-        # container boot at all, in place of the arista_ceos VM this
-        # previously ran as (which cost real CPU/RAM just to switch
-        # frames, and needed its own static-config + post-boot admin-SSH-
-        # merge workaround below to be usable at all). Trade-off: an
-        # ovs-bridge has no CLI/OS of its own, so SSH/admin access to the
-        # switch itself is gone - traded away deliberately here for the
-        # capacity to run leaf-06/leaf-07 + hosts instead. `mgmt-ipv4`
-        # doesn't apply either (no container backing it, so it's left
-        # unset for this device by the mgmt_ip check above never firing -
-        # this device's fixture entry has no mgmt_ip at all).
+        # ovs-bridge: pure L2 switch, no OS or container boot.
         if dev.get("role") == "mgmt-switch":
             node["kind"] = "ovs-bridge"
             node.pop("image", None)
-        # "host" role devices (leaf-01/02's L2-bridged VXLAN test hosts,
-        # leaf-06/07's routed EVPN Type-5 test hosts)
-        # aren't a NOS either: same "no applied config, so assign this
-        # device's own interface IPs via exec:" shape as the "server" role
-        # below, plus a default route toward the leaf for the routed
-        # (P2P/"access") hosts - the L2-bridged ones (interface role
-        # "overlay") have no gateway to route through, they're directly
-        # on the VXLAN-stretched broadcast domain, so `default_gw` is
-        # simply absent from their fixture entry.
+        # Hosts: assign IPs via exec:, plus a default route if set.
         if dev.get("role") == "host":
             node["image"] = HOST_IMAGE
             exec_cmds = [
@@ -598,20 +372,11 @@ def generate_topology(data, output_path, identity_dir, lab_name="us-east-01a"):
                 if intf.get("ip")
             ]
             if dev.get("default_gw"):
-                # replace, not add: every container already has Docker's
-                # own default route via eth0, so "add" fails with "File
-                # exists" and the host never routes via its leaf.
+                # replace, not add: Docker already sets a default route.
                 exec_cmds.append(f"ip route replace default via {dev['default_gw']}")
             if exec_cmds:
                 node["exec"] = exec_cmds
-        # "server" role devices (currently just ztp-server) aren't a NOS -
-        # nothing ever applies their own rendered config, so a static "ip"
-        # on one of their interfaces (e.g. ztp-server's OOB address) is
-        # never actually assigned anywhere else. Confirmed live: without
-        # this, ztp-server's eth1 had its MAC but no IP at all, so nothing
-        # on the OOB network could ever reach it. ZTP'd devices (spine/
-        # leaf) get their interface IPs from their own applied config
-        # instead, so this only applies to "server" role devices.
+        # Servers: IPs are not applied by any config, so set them here.
         if dev.get("role") == "server":
             exec_cmds = [
                 f"ip addr add {intf['ip']} dev {if_name}"
@@ -621,17 +386,7 @@ def generate_topology(data, output_path, identity_dir, lab_name="us-east-01a"):
             if exec_cmds:
                 node["exec"] = exec_cmds
         if dev.get("role") == "server":
-            # ztp-server's GitOps cron-pull (see deploy/entrypoint.sh)
-            # needs a read-only GitHub deploy key + known_hosts, and the
-            # rendered cEOS config's admin login needs the structured
-            # users list (see ceos_config.j2, main.py's USERS_YAML_PATH)
-            # - all three now live in the separate, private
-            # netbox-ztp-lab-secrets repo (see SECRETS_REPO_PATH above),
-            # not this repo's own deploy/ or .env. Each is optional and
-            # only bound if present on disk - a missing bind source fails
-            # the whole containerlab deploy outright, and none of these
-            # files are guaranteed to exist on a fresh clone (the secrets
-            # repo may not even be cloned locally at all).
+            # Optional secrets, bound only if present on disk.
             server_binds = []
             if name in dnsmasq_confs:
                 server_binds.append(
@@ -647,37 +402,19 @@ def generate_topology(data, output_path, identity_dir, lab_name="us-east-01a"):
                 server_binds.append(f"{users_yaml.resolve()}:/root/secrets/users.yaml:ro")
             if server_binds:
                 node["binds"] = server_binds
-        # containerlab's own Docker-managed mgmt network (what
-        # `containerlab inspect` shows per-node, distinct from this
-        # design's own fabric OOB network) is otherwise dynamically
-        # assigned by Docker's IPAM on every redeploy - not recorded
-        # anywhere and not guaranteed stable across redeploys. NetBox now
-        # models this too (see the container-mgmt Prefix), so every
-        # device with a recorded mgmt_ip gets it pinned statically here.
+        # Pin the containerlab mgmt IP recorded in NetBox.
         if dev.get("mgmt_ip"):
             node["mgmt-ipv4"] = dev["mgmt_ip"].split("/")[0]
         nodes[clab_node_name(name, dev.get("role"))] = node
 
     topology = {
         "name": lab_name,
-        # Without this, containerlab names every container
-        # "clab-<lab name>-<name>" by default - confirmed via
-        # containerlab's own topology-definition-file docs: an empty
-        # string here (as opposed to leaving the field out entirely, or
-        # the "__lab-name" magic value, which would still prefix
-        # "<lab name>-<name>") drops all prefixing, giving containers
-        # exactly the same name as this data model's own device names
-        # (e.g. "spine-01-us-east-01a"), matching what NetBox and every
-        # device's own LLDP/hostname already show.
+        # Empty prefix: container names match device names.
         "prefix": "",
         "topology": {"nodes": nodes, "links": build_links(devices)},
     }
 
-    # Pin the mgmt network's own subnet too, not just each node's address
-    # within it - otherwise containerlab would pick its own subnet (which
-    # may not match what NetBox recorded) independently of the per-node
-    # mgmt-ipv4 addresses above. Derived from any one device's mgmt_ip
-    # rather than hardcoded, so this stays in sync with NetBox automatically.
+    # Pin the mgmt network subnet, derived from a device mgmt_ip.
     mgmt_ips = [dev["mgmt_ip"] for dev in devices.values() if dev.get("mgmt_ip")]
     if lab_name in LAB_MGMT:
         topology["mgmt"] = dict(LAB_MGMT[lab_name])
@@ -692,8 +429,7 @@ def generate_topology(data, output_path, identity_dir, lab_name="us-east-01a"):
 
 
 def main(argv=None):
-    """CLI entry point - also what `ztp build` (see ztp_cli/cli.py) calls
-    directly, rather than shelling out to this file as a subprocess."""
+    """CLI entry point. Also used by `ztp build`."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="data/netbox-export.json")
     parser.add_argument("--check", action="store_true", help="validate only, don't write files")

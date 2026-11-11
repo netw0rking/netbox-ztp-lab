@@ -1,51 +1,13 @@
-"""Host-side deploy helper for SR-MPLS (NOT part of the containerized
-`ztp` CLI). Unlike scripts/ensure_ovs_bridges.py, this one must be run
-AFTER `containerlab deploy`, not before - it ensures two things this
-project's images don't carry by default, and one of them needs the
-containers to already exist:
-
-1. The host kernel's mpls_router/mpls_iptunnel modules - host-wide,
-   container-independent. Confirmed live: `modinfo`/
-   `modprobe` both work cleanly on this host's kernel
-   (6.8.0-142-generic), no reboot needed.
-2. Per-container sysctls (net.mpls.platform_labels, and
-   net.mpls.conf.<if>.input=1 on every backbone-role interface), set
-   via `docker exec <device> sysctl ...` - this is why the script as a
-   whole can only run AFTER `containerlab deploy`: there's no
-   container for `docker exec` to reach into until deploy creates one.
-   Each container gets its OWN independent copy of the net.mpls.*
-   sysctl tree once the host module is loaded (confirmed live: a
-   disposable test netns had working net.mpls.* sysctls immediately
-   after the host-level modprobe). Without these, FRR's isisd/zebra
-   can have segment-routing fully configured and still never actually
-   program a kernel MPLS route - confirmed live on a real
-   two-BBR test: segment-routing enabled correctly on both ends (SRGB
-   allocated, visible via `show isis segment-routing node`), but a
-   third, non-adjacent BBR's route to the SR-enabled loopback stayed
-   plain IP with no mpls encapsulation, consistent with the per-
-   container sysctls still being unset everywhere in that test.
-
-main() runs both steps in that order on every invocation - the
-modprobe step is idempotent (a no-op once the host modules are
-loaded), so re-running it after deploy alongside the sysctl step costs
-nothing. The per-container sysctls are runtime netns state: they don't
-survive a container being recreated, so this script needs to be
-re-run after EVERY `containerlab deploy` of this lab, not just the
-first one ever.
-
-"""
+"""Host-side SR-MPLS setup, run after containerlab deploy."""
 import json
 import subprocess
 import sys
 
-MPLS_PLATFORM_LABELS = 1048575  # 2^20 - 1, the practical max - confirmed live
+MPLS_PLATFORM_LABELS = 1048575  # 2^20 - 1
 
 
 def find_backbone_interfaces(data):
-    """{device_name: [if_name, ...]} for every role=='bbr' device's own
-    role=='backbone' interfaces - scoped to exactly what SR-MPLS forwarding
-    needs, not every interface on the box (oob/fabric interfaces don't
-    carry backbone-ring traffic and don't need this)."""
+    """{device_name: [if_name, ...]} for each bbr backbone interface."""
     result = {}
     for name, device in data.get("devices", {}).items():
         if device.get("role") != "bbr":
@@ -61,9 +23,7 @@ def find_backbone_interfaces(data):
 
 
 def ensure_mpls_modules(run=subprocess.run):
-    """Idempotent: checks lsmod-equivalent output first, only modprobes
-    a module actually missing - same "check before mutate" shape as
-    ensure_ovs_bridges.ensure_bridges's own br-exists check."""
+    """Load MPLS kernel modules if not already loaded."""
     loaded = run(["lsmod"], capture_output=True, text=True).stdout
     for module in ("mpls_router", "mpls_iptunnel"):
         if module in loaded:
@@ -79,10 +39,7 @@ def _read_sysctl(container, name, run):
 
 
 def ensure_mpls_sysctls(device_interfaces, run=subprocess.run):
-    """device_interfaces: {device_name: [if_name, ...]}, from
-    find_backbone_interfaces. Idempotent per sysctl, same shape as
-    ensure_mpls_modules: read current value, skip the write if it
-    already matches."""
+    """device_interfaces: {device_name: [if_name, ...]}."""
     for device, interfaces in device_interfaces.items():
         current = _read_sysctl(device, "net.mpls.platform_labels", run)
         if current != str(MPLS_PLATFORM_LABELS):

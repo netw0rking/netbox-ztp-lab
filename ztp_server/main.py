@@ -13,27 +13,12 @@ from ztp_server.data_store import find_device_by_serial, load_data_model
 from ztp_server.render import _env, render_config
 from ztp_server.users import load_users
 
-# Anchored on this file's own location (matching generate_topology.py's
-# and export_data_model.py's own REPO_ROOT pattern), not a hardcoded
-# "/app/..." - that assumed the container's own WORKDIR, silently
-# breaking `ztp start` on a plain dev checkout (confirmed live: a local
-# `uv run ztp start` failed its own startup check outright, since
-# /app/data/netbox-export.json never exists outside the container).
-# Still override-able via the env var for anyone who wants a different
-# data model file than the checkout's own.
+# Default data model path; overridable via env var.
 _REPO_ROOT = Path(__file__).parent.parent
 DATA_MODEL_PATH = os.environ.get("DATA_MODEL_PATH", str(_REPO_ROOT / "data" / "netbox-export.json"))
-# History of every config actually served over /ztp/config/ (not the
-# /debug/config/ alias - see get_device_config_by_name), so a device that
-# booted wrong can be diagnosed against what it was really handed, not
-# just what render_config() would produce right now. Same repo-root-
-# relative default as DATA_MODEL_PATH above, for the same reason.
+# Audit DB of served configs; overridable via env var.
 AUDIT_DB_PATH = os.environ.get("AUDIT_DB_PATH", str(_REPO_ROOT / "data" / "audit.db"))
-# Structured device-login credentials (SSH keys / passwords), bind-mounted
-# in from the separate, private netbox-ztp-lab-secrets repo - never
-# committed to this repo's own git history. Optional: absent on any
-# deploy that doesn't mount it, in which case every device's rendered
-# config simply has no local users at all (see ztp_server.users.load_users).
+# Optional device-login secrets, mounted from the secrets repo.
 USERS_YAML_PATH = os.environ.get("USERS_YAML_PATH", "/root/secrets/users.yaml")
 
 BOOTSTRAP_TEMPLATES = {
@@ -68,12 +53,7 @@ def _load_users():
     try:
         return load_users(USERS_YAML_PATH)
     except PermissionError:
-        # Confirmed live for the analogous admin-key file this replaced:
-        # outside the container (e.g. running tests as a non-root dev
-        # user), stat()'ing a path under /root/ raises PermissionError
-        # rather than returning False - the container itself runs as
-        # root, where this never happens. Either way, "can't confirm the
-        # file is there" should mean "no users rendered", not a 500.
+        # Missing or unreadable users file means no users, not an error.
         return []
 
 
@@ -99,12 +79,7 @@ def get_device_config(serial_number: str):
 
 @app.get("/ztp/users/{serial_number}")
 def get_device_users(serial_number: str):
-    """users.yaml's logins for a device that can't take them in its
-    config file - FRR's frr.conf is routing config only, so
-    ztp_frr.py.j2 fetches this and creates the Linux accounts itself
-    (login shell vtysh). Same exposure as /ztp/config, which already
-    carries these users for cEOS/SR Linux: OOB-reachable, known serials
-    only."""
+    """Logins for FRR devices, which cannot take them in frr.conf."""
     data = load_data_model(DATA_MODEL_PATH)
     device_name, _ = find_device_by_serial(data, serial_number)
     if device_name is None:
@@ -120,31 +95,19 @@ def get_device_users(serial_number: str):
 
 @app.get("/debug/renders/{serial_number}")
 def get_renders_for_serial(serial_number: str):
-    """History of configs actually served to this serial over the real
-    /ztp/config/ path, most recent first. Empty list (not 404) if the
-    serial has never booted against this ztp-server - that's the normal
-    state for a device that hasn't shown up yet, not an error."""
+    """Config history for a serial, most recent first. Empty if none."""
     return list_renders(AUDIT_DB_PATH, serial_number=serial_number)
 
 
 @app.get("/debug/data-model")
 def get_data_model():
-    """Raw view of the JSON data model ztp-server currently has loaded -
-    exactly what every real ZTP request reads from (the same file the
-    5-minute cron `git pull` keeps in sync with NetBox's own export).
-    Read-only, no side effects, not used by any ZTP path."""
+    """Raw view of the JSON data model currently loaded."""
     return load_data_model(DATA_MODEL_PATH)
 
 
 @app.get("/debug/validate")
 def get_data_model_validation():
-    """Runs the same schema.validate.validate_data_model() check used by
-    generate_topology.py --check and this project's CI, against the data
-    model ztp-server currently has loaded - a live, structured
-    Infrastructure-as-Code compliance check reachable over HTTP, not
-    just from a local checkout. 422 (not 200) when invalid, so this is
-    programmatically checkable, not just human-readable. Read-only, no
-    side effects, not used by any ZTP path."""
+    """Run validate_data_model() on the loaded data model. 422 if invalid."""
     data = load_data_model(DATA_MODEL_PATH)
     errors = validate_data_model(data)
     result = {"valid": len(errors) == 0, "errors": errors}
@@ -155,12 +118,7 @@ def get_data_model_validation():
 
 @app.get("/debug/config/{device_name}", response_class=PlainTextResponse)
 def get_device_config_by_name(device_name: str):
-    """Manual-verification convenience route, keyed by device name
-    instead of serial_number - the real /ztp/config/ route stays
-    serial-keyed since that's what a booting device actually provides,
-    but a human checking output shouldn't have to look a serial up
-    first just to curl it. Read-only, same rendering logic as the real
-    route, no side effects, not used by any ZTP path."""
+    """Config for a device by name, for manual checks. Not used by ZTP."""
     data = load_data_model(DATA_MODEL_PATH)
     if device_name not in data.get("devices", {}):
         raise HTTPException(
@@ -171,14 +129,7 @@ def get_device_config_by_name(device_name: str):
 
 
 def _check_reachability(mgmt_ip):
-    """mgmt_ip is CIDR (e.g. "172.20.20.11/24") - the containerlab Docker
-    mgmt network address, the only reachability target present on every
-    device role uniformly (the fabric OOB "ip" field is only ever
-    populated for spines/ztp-server, since leafs DHCP theirs
-    dynamically and it's never recorded back to the data model).
-    ztp-server's own eth0 sits on this same Docker bridge (its own
-    mgmt_ip), so every other device's mgmt_ip is directly reachable from
-    here without crossing into the fabric OOB network at all."""
+    """Ping a device mgmt IP from the container bridge."""
     host = mgmt_ip.split("/")[0]
     try:
         ping_ok = (
@@ -202,13 +153,7 @@ def _check_reachability(mgmt_ip):
 
 @app.get("/debug/health")
 def get_health():
-    """Quick reachability check for every device in the currently-loaded
-    data model, plus an honest observability status - this project has
-    no metrics/logging pipeline of any kind, so that block says so
-    rather than pretending to check something that doesn't exist.
-    Checks run in parallel (a sequential ping/port-22 pair per device,
-    up to 9 devices, would otherwise make this "quick" check anything
-    but). Read-only, no side effects, not used by any ZTP path."""
+    """Reachability check for every device in the loaded data model."""
     data = load_data_model(DATA_MODEL_PATH)
     devices = data.get("devices", {})
 

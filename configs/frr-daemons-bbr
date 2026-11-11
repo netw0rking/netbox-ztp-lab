@@ -1,27 +1,4 @@
-# Static /etc/frr/daemons for the backbone ring's BBR role specifically
-# (bind-mounted directly, not templated). Same as configs/frr-daemons
-# (bgpd=yes) plus isisd=yes and pathd=yes.
-#
-# isisd=yes is required as soon as a device gets ANY IS-IS config at
-# all (the `router isis 1` block, `frr_config.j2`) - "show isis
-# neighbor" cannot work with isisd not running, confirmed live: the
-# ring deploy failed this exact check ("isisd is not running")
-# under the plain configs/frr-daemons, which always ships isisd=no.
-#
-# pathd=yes is enabled from the same point rather than deferred until
-# SR-Policies actually get configured - there's no
-# harm in the daemon running idle before then, and it avoids a second,
-# later daemons-file swap (and the same "can't restart a running
-# daemon without killing PID 1" problem this file's sibling already
-# documents) once the `pathd`-consuming config actually lands.
-#
-# This is bound in place of configs/frr-daemons for role == "bbr"
-# devices only (see generate_topology.py's FRR_DAEMONS_BBR_HOST_PATH) -
-# every other FRR role (spine/leaf/mrr) keeps the plain file, since
-# they never carry IS-IS or SR-Policy config.
-#
-# The watchfrr, zebra and staticd daemons are always started.
-#
+# BBR daemons: bgpd, isisd and pathd enabled.
 bgpd=yes
 ospfd=no
 ospf6d=no

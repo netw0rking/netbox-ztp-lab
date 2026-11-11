@@ -1,59 +1,15 @@
 #!/opt/srlinux/python/virtual-env/bin/python3
-# Must run under SRLinux's own Python venv, not the system python3 - the
-# ztp.utils.chassis module (below) only exists there. Confirmed live:
-# `sr_cli`'s "platform chassis serial-number" state query does NOT reflect
-# our injected chassis_id_suffix (it reads a separate, unmodified
-# hw_details field) - only this module's own chassis_serial_number()
-# function applies the suffix, since that's the exact code path Nokia
-# built the suffix file for.
-#
-# This script is no longer reachable via genuine DHCP-triggered ZTP -
-# confirmed live that SRLinux's own ztpd daemon never runs at all in a
-# containerlab deployment (not started by systemd - PID 1 is `tini`, not
-# systemd - and not present in sr_app_mgr's own process manifest either).
-# Real ZTP is gated by a GRUB-level auto-boot flag read from the kernel
-# command line, a hardware/VM boot-time mechanism with no per-container
-# equivalent (a container shares the host's real /proc/cmdline, and
-# Docker/runc explicitly refuses to bind-mount anything under /proc).
-# generate_topology.py now renders this exact template directly and
-# invokes it via containerlab's own `exec:` directive instead - same
-# fetch-and-apply logic, triggered by containerlab rather than genuine
-# ZTP. Left reachable via GET /ztp/script/srlinux too, in case a future
-# fix ever makes real inband/DHCP triggering possible.
+# Runs in SRLinux's venv; invoked by containerlab exec:.
 import subprocess
 import time
 
 from ztp.utils.chassis import Chassis
 
-# SRLinux gives each configured network-instance its own dedicated Linux
-# network namespace, named "srbase-<network-instance-name>" - confirmed
-# live via `ip netns list` (a namespace only appears once the first
-# interface is bound into that network-instance). This project's own
-# rendered config always uses the "default" network-instance, so this is
-# fixed at that name; nothing in this script's own process (spawned by
-# containerlab's exec: in the container's own default netns) can reach
-# the fabric/OOB network at all otherwise - confirmed live: `ping` from
-# the default netns reported "Network is unreachable" even after the OOB
-# address below was fully configured and visible in `sr_cli` state.
+# Network namespace of the default network-instance.
 SRLINUX_NETNS = "srbase-default"
 
 {% if oob_interface and oob_ip %}
-# ztpd would normally be what gives this interface an address (via its
-# own DHCP client) AND fully brings it into service before ZTP ever
-# fetches anything - since it never runs, none of that happens on its
-# own, and getting a real address to actually reach the kernel here
-# needed every one of the following, confirmed live one gap at a time:
-#   1. `sr_cli`'s -c flag is NOT "run this command" (that's a plain
-#      positional argument) - it's --commit-at-end, a boolean. Setting
-#      config via `sr_cli`'s "set /..." syntax requires candidate mode
-#      first: `sr_cli -e ...` (or `--pre-command "enter candidate"`).
-#   2. an interface's admin-state defaults to disable.
-#   3. even once configured, an address never reaches the kernel unless
-#      its subinterface is also explicitly bound into a network-instance
-#      (this is what creates the "srbase-<name>" netns above).
-#   4. the subinterface's own ipv4 admin-state is a THIRD, separate knob,
-#      also disabled by default - distinct from both the interface's and
-#      the subinterface's own admin-state.
+# Configure the OOB address: candidate mode, admin-states, network-instance.
 oob_iface_cli = "{{ oob_interface | srl_interface_name }}"
 with open("/tmp/ztp_oob_ip.cli", "w") as f:
     f.write(
@@ -71,30 +27,7 @@ if oob_result.returncode != 0:
 serial = Chassis().chassis_serial_number()
 url = "http://{{ server_host }}/ztp/config/" + serial
 
-# curl inside the correct network namespace (see SRLINUX_NETNS above),
-# not Python's own urllib - this process has no route to anything on the
-# fabric/OOB network from its own default netns. Retried very generously,
-# not a single attempt or a short window - unlike the DHCP-triggered path
-# this was originally written for, exec: commands run immediately once
-# containerlab considers SRLinux "ready for config", which guarantees
-# neither that the OOB config just committed above has finished syncing
-# to the kernel yet, nor that every other node on the path (e.g.
-# mgmt-switch, a separate cEOS container with its own independent boot
-# time) has finished applying its own config. Confirmed live, twice: a
-# 30-second budget (10 attempts, 3s apart) wasn't enough, then neither
-# was 150 seconds (25 attempts, 6s apart) - both times the exact same
-# fetch succeeded immediately when retried by hand within a minute of
-# the exec: attempt exhausting its retries and failing. Root cause
-# isn't this script's own logic: this host has 4 CPUs but a sustained
-# load average of 5-11 from repeatedly destroying/redeploying multiple
-# cEOS + SRLinux containers back to back, which slows down everything
-# on it unpredictably - kernel config sync, ARP resolution, cEOS's own
-# independent boot time. Widened to comfortably exceed even a heavily
-# loaded host's worst case, rather than continuing to guess at a
-# precise number - 60 attempts at 10s apart gives 600 seconds (10
-# minutes) of margin, the same order of magnitude as cEOS's own real
-# ZTP process default timeout (`Script Exec Timeout: 900`, confirmed
-# live via `show zerotouch`).
+# Fetch in the SRLinux netns, with retries while the network settles.
 config = None
 last_error = None
 for attempt in range(180):
@@ -106,18 +39,7 @@ for attempt in range(180):
     if result.returncode == 0:
         config = result.stdout
         break
-    # Widening the retry budget alone hasn't been enough - confirmed
-    # live, twice, that the same fetch succeeds instantly by hand right
-    # after this loop exhausts even a 10-minute budget and fails. That
-    # rules out simple slow convergence; something else is going on.
-    # Surfacing curl's own real error here (instead of a generic
-    # "failed after N attempts") is what's needed to actually diagnose
-    # it, rather than continuing to guess at timeout numbers. Widened
-    # from 60 to 180 attempts to stay in parity with ztp_frr.py.j2's own
-    # budget (raised for a real, different, confirmed root cause there -
-    # a longer exec: queue on a busier deploy, not this template's own
-    # still-unexplained issue) - this is consistency, not a claim that
-    # more attempts alone fixes what's actually happening here.
+    # Keep curl's error for diagnosis.
     last_error = f"exit={result.returncode} stderr={result.stderr.strip()!r}"
     time.sleep(10)
 if config is None:
@@ -126,32 +48,7 @@ if config is None:
 with open("/etc/opt/srlinux/ztp_candidate.cli", "w") as f:
     f.write(config)
 
-# Candidate mode (-e), same as the OOB block above - the rendered config
-# (srlinux_config.j2) is itself made of "set /..." lines, which need it
-# for the exact same reason.
-#
-# Confirmed live: sourcing the WHOLE fetched file in one `sr_cli -e
-# "source ..."` call silently fails partway through once it's long
-# enough (reproduced on a real 76-line config - two devices' AAA blocks
-# plus interface/BGP config) - the candidate session dies mid-apply
-# with "ServerError: Configuration session N does not exist" (visible
-# only with --debug; not surfaced any other way), and sr_cli's own
-# error handling doesn't propagate this or abort: it keeps going
-# silently, and the file's own trailing "commit save" commits against
-# an already-dead session, applying nothing from that point on. Worse:
-# **the exit code is 0 even when this happens** - confirmed live -
-# so checking the subprocess return code alone can never catch it.
-# Splitting into smaller chunks, each sourced and committed separately,
-# works completely - confirmed live: an 18-line AAA-only chunk and a
-# 43-line interface+BGP chunk each committed cleanly on their own; the
-# same content as one 76-line file never did. The exact mechanism
-# isn't fully understood (a fixed line-count cliff seems too simple -
-# the working 43-line chunk is longer than the broken combined file's
-# own AAA portion alone - a per-line processing *time* budget, given
-# AAA "set" lines triggered visibly more schema/config lookups per line
-# in the debug trace than interface/BGP lines did, is a more likely
-# real mechanism) - chunking by line count is a conservative, working
-# proxy for it either way, confirmed live, not a guess.
+# Apply in chunks: one long source call silently fails partway through.
 CHUNK_SIZE = 15
 lines = [
     line for line in config.splitlines()
@@ -163,13 +60,7 @@ for i in range(0, len(lines), CHUNK_SIZE):
     chunk_path = f"/tmp/ztp_candidate_chunk_{i}.cli"
     with open(chunk_path, "w") as f:
         f.write("\n".join(chunk + ["commit save"]) + "\n")
-    # anchor: the last token of the chunk's own last "set" line (usually
-    # the actual value being set - an enable/disable, a number, an IP) -
-    # searched for in the post-commit running-config dump as a real
-    # verification that this chunk actually landed, since the exit code
-    # can't be trusted (see above). Retried, not a single attempt - the
-    # same silent-failure mode could in principle still hit a chunk that
-    # isn't small enough on a future, even-longer config.
+    # Verify each chunk landed in running-config; exit code is unreliable.
     anchor = chunk[-1].split()[-1].strip('"')
     applied = False
     for attempt in range(3):

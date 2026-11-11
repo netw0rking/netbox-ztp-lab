@@ -11,10 +11,7 @@ def validate_data_model(data):
                 if field not in device:
                     errors.append(f"{name}: missing required field '{field}' for role '{role}'")
 
-        # SR-MPLS backbone underlay - sr_index is
-        # an IS-IS prefix-SID, which must be unique across the whole
-        # backbone or two devices advertise the same label-switched
-        # identity.
+        # sr_index is an IS-IS prefix-SID, unique across the backbone.
         sr_index = device.get("sr_index")
         if sr_index is not None:
             if sr_index in seen_sr_indexes:
@@ -24,10 +21,7 @@ def validate_data_model(data):
             else:
                 seen_sr_indexes[sr_index] = name
 
-        # L3VNI/VRF (routed EVPN symmetric-IRB access)
-        # only makes sense as a pair - a vrf with no l3vni has nothing to
-        # bind it to the overlay, and an l3vni with no vrf has nowhere in
-        # the kernel to enslave access interfaces.
+        # L3VNI and VRF only make sense as a pair.
         has_l3vni = "l3vni" in device
         has_vrf_name = "vrf_name" in device
         if has_l3vni != has_vrf_name:
@@ -42,14 +36,7 @@ def validate_data_model(data):
 
             peer_device = connects_to.get("device")
             peer_if = connects_to.get("interface")
-            # Backbone-ring links intentionally cross site/fixture
-            # boundaries - a single-site fixture only ever contains its
-            # own site's BBR, so the peer (another site's BBR) is never
-            # resolvable within this one data model. Cross-site
-            # cable-peer resolution instead happens against the
-            # combined, multi-site NetBox-exported model
-            # (export_data_model.py's own global device_by_id), not
-            # this single-fixture check.
+            # Ring links cross sites; checked in the combined export.
             if intf.get("role") != "backbone":
                 if peer_device not in devices:
                     errors.append(f"{name}/{if_name}: connects_to unknown device '{peer_device}'")

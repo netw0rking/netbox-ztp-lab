@@ -1,14 +1,6 @@
 set / system name host-name {{ hostname }}
 {% for user in users %}
-# Confirmed live, step by step: `superuser true` alone is NOT enough for
-# a new local user to actually use the CLI at all - SSH itself succeeds,
-# but the CLI immediately rejects with "User '...' is not authorized to
-# use CLI". Two more grants are needed, both independent of superuser:
-# an explicit allow-command-list (regex; ".*" allows everything) under
-# the role's own "cli" leaf, and the role's "services" list must include
-# "cli" itself (a role can be scoped to e.g. gnmi-only otherwise). One
-# role per user, named after the user - simplest way to generalize past
-# a single hardcoded "admin" role.
+# One role per user; cli needs its own command list and services entry.
 set / system aaa authorization role {{ user.username }} superuser true
 set / system aaa authorization role {{ user.username }} cli allow-command-list [ ".*" ]
 set / system aaa authorization role {{ user.username }} services [ cli gnmi ]
@@ -16,10 +8,7 @@ set / system aaa authentication user {{ user.username }} role [ {{ user.username
 {% if user.auth == 'ssh_key' %}
 set / system aaa authentication user {{ user.username }} ssh-key [ "{{ user.value }}" ]
 {% elif user.auth == 'password' %}
-# Confirmed live: real SSH login for a password-auth user negotiates via
-# the "password" auth method directly (not "keyboard-interactive" -
-# unlike cEOS, SRLinux's sshd offers "password" directly, confirmed via
-# `ssh -o PreferredAuthentications=password`).
+# Password auth method.
 set / system aaa authentication user {{ user.username }} password "{{ user.value }}"
 {% endif %}
 {% endfor %}
@@ -43,20 +32,7 @@ set / network-instance default protocols bgp router-id {{ loopback.split('/')[0]
 set / network-instance default protocols bgp afi-safi ipv4-unicast admin-state enable
 set / network-instance default protocols bgp group underlay admin-state enable
 set / network-instance default protocols bgp group underlay afi-safi ipv4-unicast admin-state enable
-# VXLAN/EVPN overlay relay - this
-# device has no VTEP of its own (spines are pure underlay transit +
-# EVPN relay in this design), just the address-family activation plus
-# one extra knob. Confirmed live, both lines, directly on this device
-# before being written here: `evpn` is a valid `afi-safi-name` alongside
-# `ipv4-unicast` (found via `sr_cli`'s own "Wrong value" error listing
-# every valid option), and `next-hop-self` (not "next-hop-unchanged" -
-# EOS's keyword for the same concept, confirmed different on this
-# platform) is a plain boolean. Without `next-hop-self false` here,
-# each eBGP hop would rewrite the route's next-hop to itself by
-# default, so relaying a route between two leafs would point the
-# receiving leaf at this spine's own loopback instead of the
-# originating leaf's real VTEP address - the actual mechanism that
-# makes "the spine relays overlay routes between leafs" work at all.
+# EVPN relay on the spine; keep the leaf next-hop (no next-hop-self).
 set / network-instance default protocols bgp afi-safi evpn admin-state enable
 set / network-instance default protocols bgp group underlay afi-safi evpn admin-state enable
 set / network-instance default protocols bgp group underlay next-hop-self false

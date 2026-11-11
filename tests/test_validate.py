@@ -32,11 +32,7 @@ def test_duplicate_ip_is_reported():
 
 
 def test_backbone_role_link_to_a_device_outside_this_fixture_is_not_an_error():
-    # Ring links intentionally cross site/fixture boundaries (a
-    # single-site fixture only ever contains its own site's BBR) - the
-    # peer device named here legitimately doesn't exist in this data
-    # model, unlike every other role's connects_to, which is validated
-    # against a single, self-contained site.
+    # Ring peers may live outside this single-site fixture.
     data = {
         "devices": {
             "bbr-01-us-central-01a": {

@@ -4,10 +4,7 @@ from netbox.export_data_model import SITE_SLUGS, export_data_model
 
 
 def test_site_slugs_match_what_the_builders_and_topology_generator_know():
-    # Three independent site lists must agree, or a site gets built into
-    # NetBox but never exported (or exported but never deployed): this
-    # exporter's SITE_SLUGS, build_backbone_fabric_lab.py's SITES (+ the
-    # us-east-01a base lab), and generate_topology.py's LAB_SITES.
+    # Site lists must agree across exporter, builder and topology.
     from generate_topology import LAB_SITES
     from netbox.build_backbone_fabric_lab import SITES
 
@@ -29,13 +26,7 @@ def _fake_device(device_id, name, role_slug, bgp_asn=None, custom_fields=None, s
 
 
 def test_export_data_model_reads_back_backbone_ring_custom_fields():
-    # The bug this test exists to prevent, found live building a
-    # 4-site ring: net/backbone_peers/vendor_image had no NetBox custom
-    # field at all, so they silently never survived a push/export
-    # round-trip (every device came back with them as None) - the
-    # whole IS-IS + multihop-EVPN frr_config.j2 work never actually
-    # rendered anything on a real deploy, since every `{% if net %}`/
-    # `{% if backbone_peers %}` guard was false.
+    # Custom field must exist so the value survives export.
     nb = MagicMock()
 
     site_a = MagicMock(id=1)
@@ -73,12 +64,7 @@ def test_export_data_model_reads_back_backbone_ring_custom_fields():
     assert entry["net"] == "49.0000.0000.0001.00"
     assert entry["backbone_peers"] == [{"loopback": "10.1.3.1", "asn": 65300}]
     assert entry["vendor_image"] == "quay.io/frrouting/frr:10.5.1"
-    # Found live during deploy: this field had no NetBox custom
-    # field at all (an earlier plan note incorrectly claimed NetBox
-    # custom fields can't hold list-of-object values - backbone_peers,
-    # asserted right above, already disproves that), so the "real,
-    # deployable demonstration" SR-Policy could never actually reach a
-    # live device via the normal push/export/generate_topology pipeline.
+    # Needs a NetBox custom field to survive the round-trip.
     assert entry["sr_policies"] == [
         {
             "color": 100,
@@ -87,10 +73,7 @@ def test_export_data_model_reads_back_backbone_ring_custom_fields():
             "segments": [{"index": 10, "nai_prefix": "fc00:300::/48"}],
         }
     ]
-    # Found live during review: this field's read-back was
-    # missing entirely, reproducing the exact bug class already fixed
-    # once for net/backbone_peers/vendor_image (Bug #10) - would have
-    # silently blocked the live deploy the same way.
+    # Read-back must include this field.
     assert entry["srv6_locator"] == "fc00:100::/48"
 
 
@@ -124,11 +107,7 @@ def test_export_data_model_merges_devices_from_multiple_sites():
 
 
 def test_export_data_model_resolves_cross_site_cable_peer_via_global_device_by_id():
-    # The bug this task exists to prevent: if device_by_id were rebuilt
-    # per-site, resolving a cable peer that lives in a DIFFERENT site would
-    # fail (device_by_id.get(...) returns None -> AttributeError on
-    # peer_device.custom_fields). This test cables device-a (site-a) to
-    # device-b (site-b) and asserts the peer resolves correctly.
+    # Cable peers in other sites must resolve.
     nb = MagicMock()
 
     site_a = MagicMock(id=1)
@@ -166,18 +145,13 @@ def test_export_data_model_resolves_cross_site_cable_peer_via_global_device_by_i
 
     nb.dcim.interfaces.filter.side_effect = fake_interfaces_filter
 
-    # a_terminations/b_terminations resolve to the actual terminating
-    # objects (Interfaces records), compared by .id against the current
-    # iface, per the existing code's own comment.
+    # Terminations compared by id against the current iface.
     term_a = MagicMock(id=1001)
     term_b = MagicMock(id=2001)
     fake_cable = MagicMock(a_terminations=[term_a], b_terminations=[term_b])
     nb.dcim.cables.get.return_value = fake_cable
 
-    # nb.dcim.interfaces.get is called two ways in the real code:
-    #   1. get(device_id=nb_device.id, name="mgmt0")   -> mgmt lookup
-    #   2. get(other_end.id)                            -> peer iface lookup
-    # Use side_effect covering both call shapes.
+    # interfaces.get is called with two argument shapes.
     other_end_id_a = 2001  # device-a's cable peer termination id
     other_end_id_b = 1001  # device-b's cable peer termination id
 
@@ -202,14 +176,7 @@ def test_export_data_model_resolves_cross_site_cable_peer_via_global_device_by_i
 
 
 def test_link_to_host_role_device_with_no_ip_is_overlay_not_oob():
-    # The bug this test exists to prevent, found live on kp00srvr03:
-    # a leaf's host-facing link was exported as role "oob" (the fallback
-    # for "not both ends BGP-speaking") instead of "overlay", because the
-    # is_fabric check only knows two outcomes. generate_topology.py's FRR
-    # branch silently drops any interface whose role matches neither
-    # "oob and has ip" nor "fabric" nor "overlay" nor "access" - so this
-    # host-facing port was never enslaved into the VXLAN bridge at all,
-    # and host-01 couldn't reach anything across the fabric.
+    # Host-facing link must be classified as overlay, not oob.
     nb = MagicMock()
 
     site_a = MagicMock(id=1)
@@ -274,8 +241,7 @@ def _cabled_link_data(device_a, device_b, if_name_a="eth1", if_name_b="eth1"):
     nb.dcim.devices.filter.side_effect = fake_devices_filter
 
     cable = MagicMock(id=99)
-    # MagicMock's own `name` constructor kwarg is reserved for the mock's
-    # repr, not a settable attribute - must assign it after construction.
+    # MagicMock's name kwarg is not settable; assign after creation.
     iface_a = MagicMock(id=1001, cable=cable)
     iface_a.name = if_name_a
     iface_a.device.id = device_a.id
@@ -308,14 +274,7 @@ def _cabled_link_data(device_a, device_b, if_name_a="eth1", if_name_b="eth1"):
 
 
 def test_cross_site_link_between_two_bgp_devices_is_backbone_not_fabric():
-    # The bug this test exists to prevent, found live deploying a
-    # backbone ring: the old fabric/oob split only checked whether BOTH
-    # ends have bgp_asn set - true for two ring BBRs in DIFFERENT sites
-    # too, so a ring link was mis-classified "fabric" (with spurious
-    # peer_ip/peer_asn) instead of "backbone". generate_topology.py's
-    # per-interface IS-IS enablement is gated on role == "backbone" -
-    # under "fabric" it silently never rendered, so isisd never formed
-    # an adjacency at all ("show isis neighbor" came back empty).
+    # Ring links must be classified as backbone, not fabric.
     device_a = _fake_device(101, "bbr-01-us-central-01a", "bbr", bgp_asn=65100, site_id=1)
     device_b = _fake_device(201, "bbr-01-us-south-01a", "bbr", bgp_asn=65300, site_id=2)
     nb = _cabled_link_data(device_a, device_b, if_name_a="eth3", if_name_b="eth1")
@@ -343,11 +302,7 @@ def test_same_site_link_between_two_bgp_devices_is_still_fabric():
 
 
 def test_bbr_device_gets_hold_down_block_from_its_own_sites_tagged_prefix():
-    # The Review Focus risk this test exists to pin: a site with a
-    # hold-down-tagged Prefix must only ever hand its value to THAT
-    # site's own bbr device - a lookup missing scope_id (matching by tag
-    # alone, across every site) would leak one site's block onto
-    # another's device once two new sites both have one.
+    # Hold-down prefix must only match its own site's bbr.
     nb = MagicMock()
 
     site_a = MagicMock(id=1)
@@ -377,8 +332,7 @@ def test_bbr_device_gets_hold_down_block_from_its_own_sites_tagged_prefix():
 
 
 def test_non_bbr_device_never_gets_hold_down_block():
-    # Review Focus: only role == "bbr" ever gets this field, even though
-    # a dsr/esr/mrr device in the same new site shares its site.id.
+    # Only role bbr gets this field.
     nb = MagicMock()
 
     site_a = MagicMock(id=1)
@@ -398,8 +352,7 @@ def test_non_bbr_device_never_gets_hold_down_block():
 
 
 def test_bbr_in_a_site_with_no_tagged_prefix_gets_no_hold_down_block():
-    # Existing sites (us-central-01a etc.) - no regression, field stays
-    # unset, same as today.
+    # Existing sites leave the field unset.
     nb = MagicMock()
 
     site_a = MagicMock(id=5)
@@ -417,16 +370,7 @@ def test_bbr_in_a_site_with_no_tagged_prefix_gets_no_hold_down_block():
 
 
 def test_bbr_export_skips_prefix_lookup_when_hold_down_tag_does_not_exist_yet():
-    # The bug this test exists to prevent, found live: no site currently
-    # uses the new addressing scheme (deliberately), so the
-    # "hold-down-block" Tag has never actually been created in NetBox.
-    # nb.ipam.prefixes.filter(tag="hold-down-block", ...) validates the tag
-    # slug against NetBox's own live choices and raises a 400 ("Select a
-    # valid choice. hold-down-block is not one of the available choices.")
-    # when the tag doesn't exist yet - a real error the earlier mock-only
-    # tests couldn't reproduce (they mock the filter call directly, never
-    # exercising NetBox's real choice-validation). Confirmed live running
-    # netbox.export_data_model against the real instance.
+    # Tag must exist in NetBox before filtering by it.
     nb = MagicMock()
 
     site_a = MagicMock(id=5)
@@ -455,9 +399,7 @@ def test_bbr_export_skips_prefix_lookup_when_hold_down_tag_does_not_exist_yet():
 
 
 def test_export_reads_back_dci_and_route_reflector_fields():
-    # l3vni/vrf_name/default_gw had NetBox custom fields (build side) but
-    # were never read back here - the routed EVPN Type-5 path never
-    # survived a NetBox round-trip. DCI depends on all of them.
+    # l3vni, vrf_name and default_gw must be read back too.
     nb = MagicMock()
     nb.dcim.sites.get.return_value = MagicMock(id=1)
     rr = _fake_device(1, "bbr-03-us-north-02a", "bbr", bgp_asn=65000,

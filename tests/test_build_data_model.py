@@ -41,18 +41,12 @@ def test_build_ipam_hierarchy_uses_given_addressing_not_hardcoded(monkeypatch):
     assert "10.1.1.0/24" in created_prefixes
     assert "10.1.1.0/27" in created_prefixes
     assert "10.1.1.32/27" in created_prefixes
-    # The base lab's own prefixes must NOT appear - proves this isn't
-    # still reading the old hardcoded constants.
+    # Base lab prefixes must not appear.
     assert "10.0.0.0/24" not in created_prefixes
 
 
 def test_container_mgmt_prefix_lookup_is_not_scoped_to_site(monkeypatch):
-    # container_mgmt_prefix is the shared containerlab Docker mgmt network -
-    # one object reused across every lab/site, not a per-site allocation.
-    # Live deploy against real NetBox hit this: scoping its lookup
-    # to `site.id` means a second site's build never finds the first site's
-    # already-created object, so it tries to `create()` a duplicate and
-    # NetBox rejects it ("Duplicate prefix found in global table").
+    # Shared across sites, so the lookup is not scoped to site.id.
     nb = MagicMock()
     lookups = []
 
@@ -83,14 +77,7 @@ def test_container_mgmt_prefix_lookup_is_not_scoped_to_site(monkeypatch):
 
 
 def test_p2p_prefix_lookup_is_not_scoped_to_site(monkeypatch):
-    # p2p_prefix is the *shared* backbone p2p range (10.1.0.0/28) for the
-    # two transit sites (us-south-01a/us-north-01a) - not a per-site
-    # allocation the way it is for the two fabric sites. Same class of
-    # bug as container_mgmt_prefix above: scoping the lookup to
-    # `site.id` means us-north-01a's build never finds us-south-01a's
-    # already-created object for the identical prefix value, so it
-    # tries to `create()` a duplicate and NetBox rejects it. Confirmed
-    # live building the 4-site ring against real NetBox.
+    # Shared across sites, so the lookup is not scoped to site.id.
     nb = MagicMock()
     lookups = []
 
@@ -119,22 +106,13 @@ def test_p2p_prefix_lookup_is_not_scoped_to_site(monkeypatch):
 
 
 def test_site_aggregate_sets_site_aggregate_role_on_site_prefix(monkeypatch):
-    # New-scheme sites (us-central-02a, us-east-02a going forward)
-    # identify their own /22 block allocation via the pre-existing
-    # "Site Aggregate" NetBox Role assigned to their site-scoped Prefix -
-    # NOT a separate Aggregate object. Confirmed live: NetBox rejects any
-    # Aggregate overlapping an existing one ("Aggregates cannot overlap"),
-    # and every new site's /22 is inherently covered by the existing
-    # org-wide 10.0.0.0/8 aggregate, so a second Aggregate object can
-    # never be created here.
+    # Uses the site-aggregate role; no separate Aggregate object.
     nb = MagicMock()
     prefix_calls = []
 
     def fake_get_or_create(endpoint, lookup, defaults=None):
         result = MagicMock()
-        # Distinct ids per role slug, not one shared id for everything -
-        # otherwise the role-id assertion below would pass by coincidence
-        # even if the wrong role's id leaked in (e.g. "production"'s).
+        # Distinct ids so a wrong id cannot pass by coincidence.
         if lookup.get("slug") == "site-aggregate":
             result.id = 77
         elif lookup.get("slug") == "production":
@@ -173,8 +151,7 @@ def test_site_aggregate_sets_site_aggregate_role_on_site_prefix(monkeypatch):
 
 
 def test_no_site_aggregate_addressing_key_sets_no_role_on_site_prefix(monkeypatch):
-    # Existing sites (us-central-01a etc.) never pass site_aggregate - their
-    # site_prefix must be completely unaffected (no role), same as today.
+    # Existing sites pass no site_aggregate, so no role.
     nb = MagicMock()
     prefix_calls = []
 
@@ -216,9 +193,7 @@ def test_hold_down_prefix_creates_a_tagged_role_scoped_prefix(monkeypatch):
     def fake_get_or_create(endpoint, lookup, defaults=None):
         prefix_calls.append((lookup, defaults))
         result = MagicMock()
-        # Distinct ids per object type, not one shared id for everything -
-        # otherwise the tags==[42] assertion below would pass by
-        # coincidence even if the wrong object's id leaked in.
+        # Distinct ids so a wrong id cannot pass by coincidence.
         if lookup.get("slug") == "hold-down-block":
             result.id = 42  # the tag
         elif lookup.get("slug") == "hold-down":
@@ -250,8 +225,7 @@ def test_hold_down_prefix_creates_a_tagged_role_scoped_prefix(monkeypatch):
         if lookup.get("prefix") == "10.1.20.0/23"
     )
     lookup, defaults = hold_down_call
-    # Site-scoped (unlike p2p_prefix/container_mgmt_prefix) - this value
-    # is unique per site, not shared, so it stays scoped to site.id.
+    # Per-site value, so scoped to site.id.
     assert lookup["scope_type"] == "dcim.site"
     assert lookup["scope_id"] == 9
     assert defaults["tags"] == [42]  # the hold-down-block tag's id
@@ -324,12 +298,7 @@ def test_build_cables_creates_a_same_site_cable_from_the_local_devices_dict():
 
 
 def test_build_cables_looks_up_cross_site_peer_in_netbox_when_not_in_local_devices_dict():
-    # The bug this test exists to prevent, found live on kp00srvr03: a
-    # backbone-ring link's peer (another site's BBR) never lives in THIS
-    # call's `devices` dict, which is built from only one site's own
-    # fixture (build_backbone_fabric_lab.py calls build_devices/
-    # build_cables once per site, in a loop). The old code assumed
-    # devices[peer_name] always existed, crashing with a raw KeyError.
+    # Peer may live in another site's devices dict; no KeyError.
     nb = MagicMock()
     a_iface = MagicMock(id=1, cable=None)
     devices = {"bbr-01-us-central-01a": {"interfaces": {"eth3": a_iface}}}
@@ -347,8 +316,7 @@ def test_build_cables_looks_up_cross_site_peer_in_netbox_when_not_in_local_devic
 
     peer_device = MagicMock(id=99)
     nb.dcim.devices.get.return_value = peer_device
-    # MagicMock's own `name` constructor kwarg is reserved for the mock's
-    # repr, not a settable attribute - must assign it after construction.
+    # MagicMock's name kwarg is not settable; assign after creation.
     peer_iface = MagicMock(id=2, cable=None)
     peer_iface.name = "eth1"
     nb.dcim.interfaces.filter.return_value = [peer_iface]
@@ -363,11 +331,7 @@ def test_build_cables_looks_up_cross_site_peer_in_netbox_when_not_in_local_devic
 
 
 def test_build_cables_skips_gracefully_when_peer_site_not_yet_built():
-    # The peer site hasn't been processed at all yet (its device doesn't
-    # exist in NetBox), e.g. central's build_cables() running before
-    # south's own turn in the SITES loop - this must not crash. The
-    # dedup key is symmetric, so south's own later build_cables() call
-    # picks up this exact same link once south's device actually exists.
+    # Peer device may not exist yet; must not crash.
     nb = MagicMock()
     a_iface = MagicMock(id=1, cable=None)
     devices = {"bbr-01-us-central-01a": {"interfaces": {"eth3": a_iface}}}
@@ -404,8 +368,7 @@ def test_sr_index_is_an_integer_device_custom_field():
 
 
 def test_build_devices_pushes_every_ladder_and_dci_field():
-    # Every device-level field the ladder/DCI templates read must be
-    # written to NetBox, or it silently vanishes on export.
+    # Every device field the templates read is written to NetBox.
     import inspect
     from netbox import build_data_model
     src = inspect.getsource(build_data_model.build_devices)

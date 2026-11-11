@@ -1,7 +1,4 @@
-# Rendered per ztp-server by generate_topology.py's write_dnsmasq_configs()
-# and bind-mounted to /etc/dnsmasq.site.conf - see that function. The
-# static dhcp/dnsmasq.conf is only a fallback for a topology file that
-# doesn't bind this (e.g. the hand-maintained checkpoint.clab.yml).
+# Rendered per site by generate_topology.py; see write_dnsmasq_configs().
 interface=eth1
 bind-interfaces
 {% if dhcp_range %}
@@ -9,31 +6,15 @@ dhcp-range={{ dhcp_range }}
 {% if dhcp_router %}
 dhcp-option=option:router,{{ dhcp_router }}
 {% endif %}
-# The tag:ceos / tag:srlinux options below only ever fire if something
-# first sets those tags - dnsmasq only auto-tags a request by its
-# *interface* (confirmed live: `log-dhcp` showed "tags: eth1" on a real
-# cEOS DHCPREQUEST, nothing else), so without an explicit tag-setting
-# rule these two dhcp-option lines never matched anything and cEOS fell
-# back to Arista's own default cloud ZTP URL (arista.io) every time,
-# looping forever on a doomed CloudVision enrollment attempt instead of
-# ever fetching from this ztp-server. Fixed by matching on DHCP option 60
-# (vendor class identifier), confirmed live for cEOS: a real leaf sent
-# `vendor class: Arista;cEOSLab;CEOS-LEAF1-0001`.
+# Tag cEOS requests by DHCP option 60 (vendor class).
 dhcp-vendorclass=set:ceos,Arista
 # Arista cEOS ZTP: DHCP option 67 (bootfile-name) as an HTTP URL.
 dhcp-option=tag:ceos,67,"http://{{ server_ip }}/ztp/script/ceos"
-# Nokia SRLinux's vendor class string is not yet confirmed live (SRLinux
-# ZTP never reaches this DHCP server at all today. Its in-band ZTP path is
-# never attempted because containerlab's
-# management network already satisfies its "is OOB reachable" check).
-# This tag rule is a placeholder and should be verified live once that
-# separate blocker is resolved.
+# Nokia SRLinux: placeholder vendor class, not yet verified.
 dhcp-vendorclass=set:srlinux,Nokia
 # Nokia SRLinux ZTP: DHCP option 239, vendor-specific ZTP script URL.
 dhcp-option=tag:srlinux,239,"http://{{ server_ip }}/ztp/script/srlinux"
 {% else %}
-# No DHCP-ZTP device (cEOS/SRLinux) shares this server's OOB subnet -
-# every device here is bootstrapped via containerlab exec: instead - so
-# no DHCP range is served at all.
+# No DHCP-ZTP devices on this subnet, so no range is served.
 {% endif %}
 log-dhcp

@@ -22,9 +22,7 @@ def test_find_ovs_bridge_names_returns_empty_list_when_none_present():
 
 
 def test_find_ovs_bridge_names_finds_multiple_across_renamed_sites():
-    # The whole point: bridge names are derived from whatever the topology
-    # file actually contains, not hardcoded - a renamed site (or a second
-    # site in a multi-site lab) needs no changes to this script.
+    # Bridge names come from the topology, not hardcoded.
     topology = {
         "topology": {
             "nodes": {
@@ -64,8 +62,7 @@ def test_ensure_bridges_creates_bridge_when_missing():
         calls.append(cmd)
 
         class Result:
-            # br-exists returns 2 when the bridge does not exist (ovs-vsctl's
-            # own documented exit code for "no such bridge").
+            # Exit code 2 means the bridge does not exist.
             returncode = 0 if cmd[2] != "br-exists" else 2
 
         return Result()

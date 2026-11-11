@@ -1,19 +1,4 @@
-# netbox/reconcile_backbone_fabric_lab.py
-"""Removes what build_backbone_fabric_lab.py leaves behind in NetBox.
-
-The builder only ever creates or updates. When the lab's design changes
-, that leaves:
-  - retired sites (us-south-01a, us-north-01a) with their devices, IPs
-    and site-scoped prefixes,
-  - cables on a fixture interface whose far end isn't the fixture's
-    connects_to - incl. ones left one-ended by a deleted device,
-  - IPs on a fixture interface that the fixture no longer lists (two IPs
-    on one interface break the exporter's peer_ip lookup),
-  - custom fields a fixture device no longer sets (the exporter would
-    keep exporting e.g. overlay_vni for an ESR now in the routed VRF).
-
-Dry run by default - prints every action. --apply executes them.
-"""
+"""Remove objects that build_backbone_fabric_lab.py leaves in NetBox."""
 import argparse
 
 from netbox.build_backbone_fabric_lab import SITES
@@ -56,10 +41,7 @@ def plan_actions(nb, sites, retired_sites):
                 nb_if = nb.dcim.interfaces.get(device_id=nb_dev.id, name=if_name)
                 if nb_if is None:
                     continue
-                # A cable whose far end isn't what the fixture says - incl.
-                # one left dangling when the far device was deleted
-                # (NetBox keeps it, one-ended) - blocks build_cables, which
-                # skips any interface that already has a cable.
+                # Dangling cable from a deleted peer; blocks build_cables.
                 want = intf.get("connects_to")
                 if getattr(nb_if, "cable", None):
                     peers = nb_if.link_peers or []

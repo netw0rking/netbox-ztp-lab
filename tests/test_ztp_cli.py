@@ -41,8 +41,7 @@ def test_start_spawns_uvicorn_with_given_host_and_port(monkeypatch):
 
 
 class _FakeProc:
-    """Stand-in for subprocess.Popen, just enough for _supervise's own
-    calls (terminate/wait) - never actually spawns anything real."""
+    """Fake subprocess.Popen; never spawns a real process."""
 
     def __init__(self, returncode=0):
         self.returncode = returncode
@@ -71,9 +70,7 @@ def test_supervise_spawns_uvicorn_once_and_returns_its_exit_code(monkeypatch):
 
 
 def test_supervise_restarts_uvicorn_in_place_on_soft_restart_request(monkeypatch):
-    # A pre-set Event, injected directly (see _supervise's own docstring)
-    # rather than sent as a real OS signal - deterministic, no timing
-    # race with the poll loop.
+    # Pre-set Event instead of a real OS signal.
     procs = [_FakeProc(returncode=0), _FakeProc(returncode=0)]
     spawned = []
 
@@ -91,9 +88,7 @@ def test_supervise_restarts_uvicorn_in_place_on_soft_restart_request(monkeypatch
     )
 
     assert exit_code == 0
-    # Spawned twice: the original process, then the replacement after
-    # the soft-restart request - and the original was terminated, not
-    # left running or leaked.
+    # Spawned twice; the original is terminated.
     assert spawned == [("127.0.0.1", 8000), ("127.0.0.1", 8000)]
     assert procs[0].terminated is True
     assert procs[1].terminated is False
@@ -210,7 +205,7 @@ def test_spawn_uvicorn_redirects_output_to_the_log_file(monkeypatch, tmp_path):
 
     assert result == "a-fake-proc"
     assert captured["stderr"] == cli_module.subprocess.STDOUT
-    # stdout was opened against the (monkeypatched) log path, in append mode.
+    # stdout opened in append mode on the log path.
     assert captured["stdout"].name == str(log_path)
     assert captured["stdout"].mode == "a"
     captured["stdout"].close()
@@ -223,10 +218,7 @@ def test_logs_defaults_to_50_lines_no_follow():
 
 
 def test_logs_tails_the_log_file(monkeypatch, tmp_path, capfd):
-    # capfd, not capsys: `ztp logs` shells out to the real `tail` binary
-    # (see _cmd_logs), which writes straight to the inherited fd 1 -
-    # capsys only intercepts Python-level sys.stdout writes, not a
-    # subprocess's own fd-level output.
+    # capfd, since `ztp logs` writes to the inherited fd 1.
     log_path = tmp_path / "ztp-app.log"
     log_path.write_text("line one\nline two\nline three\n")
     monkeypatch.setattr(cli_module, "LOG_PATH", log_path)
@@ -258,7 +250,7 @@ def _write_fake_proc_entry(proc_dir, pid, argv0):
 def test_find_dnsmasq_pids_finds_only_dnsmasq_among_real_proc_entries(tmp_path):
     _write_fake_proc_entry(tmp_path, 123, "dnsmasq")
     _write_fake_proc_entry(tmp_path, 456, "/usr/sbin/sshd")
-    (tmp_path / "self").mkdir()  # non-numeric entry /proc always has - must be skipped
+    (tmp_path / "self").mkdir()  # non-numeric, must be skipped
 
     pids = cli_module._find_dnsmasq_pids(str(tmp_path))
 

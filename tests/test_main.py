@@ -15,7 +15,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_MODEL_PATH", str(data_path))
     monkeypatch.setenv("AUDIT_DB_PATH", str(tmp_path / "audit.db"))
 
-    # Import after env var is set so main.py picks up the test path at module load.
+    # Import after setting the env var.
     import importlib
     import ztp_server.main as main_module
     importlib.reload(main_module)
@@ -27,10 +27,7 @@ def test_get_config_for_known_serial(client):
     response = client.get("/ztp/config/CEOS-LEAF1-0001")
     assert response.status_code == 200
     assert "hostname leaf-01-us-east-01a" in response.text
-    # USERS_YAML_PATH isn't set for this fixture, so it falls back to the
-    # real default (/root/secrets/users.yaml) - a non-root test runner
-    # can't read that path at all (PermissionError, handled the same way
-    # as the earlier admin-key default), so no users are rendered.
+    # Default users.yaml is unreadable here, so no users are rendered.
     assert "netautobot" not in response.text
 
 
@@ -100,9 +97,7 @@ def test_get_renders_for_serial_with_no_history_returns_empty_list(client):
 
 
 def test_debug_config_route_does_not_record_audit_entry(client):
-    # /debug/config/ is a manual-verification convenience alias, not the
-    # real ZTP path a device hits - it shouldn't pollute the audit trail
-    # with renders no device ever actually received.
+    # Debug alias, not a real ZTP path; not logged to the audit trail.
     client.get("/debug/config/leaf-01-us-east-01a")
 
     response = client.get("/debug/renders/CEOS-LEAF1-0001")
@@ -127,8 +122,7 @@ def test_get_data_model_returns_raw_json(client):
     assert response.status_code == 200
     body = response.json()
     assert "leaf-01-us-east-01a" in body["devices"]
-    # Exactly the same file every real ZTP request reads from - not a
-    # filtered or reshaped view.
+    # Same file real ZTP requests read; not filtered.
     with open(FIXTURES / "valid_data_model.json") as f:
         assert body == json.load(f)
 
@@ -140,10 +134,7 @@ def test_get_validate_returns_valid_for_good_data_model(client):
 
 
 def test_get_validate_returns_422_for_bad_data_model(client, tmp_path, monkeypatch):
-    # Same schema.validate.validate_data_model() check generate_topology.py
-    # --check and CI already run locally - this proves it's reachable the
-    # same way over HTTP, against whatever ztp-server currently has
-    # loaded, not just from a local checkout.
+    # Same validation as generate_topology.py --check.
     bad_data_path = tmp_path / "bad-netbox-export.json"
     shutil.copy(FIXTURES / "missing_asn.json", bad_data_path)
     monkeypatch.setenv("DATA_MODEL_PATH", str(bad_data_path))
@@ -161,24 +152,17 @@ def test_get_validate_returns_422_for_bad_data_model(client, tmp_path, monkeypat
 
 
 def test_check_reachability_unit(monkeypatch):
-    # Direct unit test of the actual ping/port-22 logic against a real,
-    # always-up loopback target - no mocking, so this is the one place
-    # that proves the real subprocess/socket calls work at all, not just
-    # that the endpoint plumbs a mocked result through correctly.
+    # Real ping and port-22 check against loopback; no mocks.
     import ztp_server.main as main_module
 
     result = main_module._check_reachability("127.0.0.1/32")
     assert result["ip"] == "127.0.0.1"
     assert result["ping"] is True
-    # ssh_port_open is genuinely environment-dependent (whatever's
-    # listening on the test runner's own :22, if anything) - not
-    # asserted on.
+    # ssh_port_open depends on the environment; not asserted.
 
 
 def test_get_health_reports_reachability_and_observability_status(client, monkeypatch):
-    # Mocked for determinism and speed - the real ping/port-22 logic
-    # against 172.20.20.x addresses that don't exist in this test
-    # environment is covered by test_check_reachability_unit instead.
+    # Mocked for determinism; the real check is in the unit test.
     import ztp_server.main as main_module
 
     monkeypatch.setattr(
@@ -225,8 +209,7 @@ def test_get_health_reports_reachability_and_observability_status(client, monkey
         "spine-02-us-east-01a",
         "ztp-server-us-east-01a",
     }
-    # mgmt-switch is now an ovs-bridge - no
-    # container backs it, so it has no mgmt_ip to check reachability on.
+    # mgmt-switch is an ovs-bridge, so no mgmt_ip to check.
     assert body["devices"]["mgmt-switch-us-east-01a"] == {"mgmt_ip": None, "reachability": None}
 
 
@@ -255,9 +238,7 @@ def _users_client(tmp_path, monkeypatch):
 
 
 def test_get_users_for_known_serial_returns_login_list(tmp_path, monkeypatch):
-    # FRR has no config-file construct for local users (frr.conf is
-    # routing config only), so its bootstrap fetches them separately and
-    # creates Linux accounts itself.
+    # FRR fetches users separately and creates Linux accounts.
     response = _users_client(tmp_path, monkeypatch).get("/ztp/users/FRR-LEAF2-0001")
     assert response.status_code == 200
     assert response.json() == [

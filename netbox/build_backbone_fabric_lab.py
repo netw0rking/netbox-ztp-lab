@@ -1,8 +1,4 @@
-# netbox/build_backbone_fabric_lab.py
-"""Builds NetBox site/device/cable records for the backbone+fabric lab.
-Reuses
-every build_data_model.py function; this file only supplies this lab's own
-site list, addressing, and per-site fixture path."""
+"""Build NetBox records for the backbone+fabric lab."""
 from pathlib import Path
 
 from netbox.build_data_model import (
@@ -17,12 +13,7 @@ from netbox.nb_client import get_client
 REPO_ROOT = Path(__file__).parent.parent
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 
-# Fabric sites (us-central-01a, us-west-01a) get a full addressing block.
-# Ladder backbone POPs get the drawing's
-# 192.168.1.<NN> loopback, a /29 OOB block 10.200.<NN>.0/29 (ztp-server on
-# its last usable address, .6), and share one 10.96.0.0/12 container for
-# the 10.<100+a>.<b>.<x>/24 ladder links. us-south-01a/us-north-01a, the
-# old ring's transit sites, are retired (netbox/retire_sites.py).
+# Addressing for fabric and ladder backbone sites.
 SITES = {
     "us-central-01a": {
         "fixture": FIXTURES_DIR / "backbone_fabric_us_central_01a.json",

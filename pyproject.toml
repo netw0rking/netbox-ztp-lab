@@ -21,11 +21,7 @@ ztp = "ztp_cli.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# Existing top-level layout kept as-is rather than restructured into
-# a single importable package - minimizes churn to code that's already
-# tested and working. `ztp_server`, `netbox`, `schema`, `ztp_cli` are
-# real packages already (all have __init__.py); `generate_topology` is
-# the one loose top-level module.
+# Packages listed explicitly; generate_topology is a loose module.
 [tool.hatch.build.targets.wheel]
 packages = ["ztp_server", "netbox", "schema", "ztp_cli"]
 

@@ -1,20 +1,4 @@
-"""The `ztp` console-script - one packaged CLI in place of running loose
-scripts directly (`python3 -m netbox.export_data_model`, a raw
-`exec uvicorn ...`).
-
-Every subcommand is about the ztp-server's own process (and the dnsmasq
-service it depends on for ZTP to work at all) - none of them touch the
-separate containerlab lab topology (that stays a plain
-`generate_topology.py`, run by whoever manages the lab, entirely outside
-this package's CLI.
-
-No `build` subcommand: a genuine "stop the old container, rm it and its
-image, rebuild from the current checkout, start a new one" needs the
-Docker socket mounted into this container AND containerlab itself
-installed in it (a hand-rolled `docker run` would not correctly restore
-this node's veth/OOB wiring the way `containerlab deploy --node-filter
-... --reconfigure` does) - deliberately deferred rather than shipped half-right.
-"""
+"""The `ztp` console script for managing the ztp-server container."""
 
 import argparse
 import os
@@ -24,19 +8,10 @@ import sys
 import threading
 from pathlib import Path
 
-# Where the web service's own stdout/stderr go (see _spawn_uvicorn) -
-# deliberately its own file rather than reusing the container's stdout,
-# so `ztp logs` can tail just this service's output without sshd/cron/
-# dnsmasq noise mixed in. Trade-off: this output no longer appears in
-# `docker logs`/`containerlab logs` for this container.
+# Web service output goes to a dedicated log file.
 LOG_PATH = Path("/var/log/ztp-app.log")
 
-# dnsmasq is what actually makes ZTP work (cEOS/SRLinux find this
-# ztp-server at all via DHCP options 67/239 - see dhcp/dnsmasq.conf) -
-# entrypoint.sh runs it in a `while true; do dnsmasq ...; sleep 5; done`
-# self-healing loop, so `ztp dhcp-restart` doesn't need any new
-# supervision code of its own: killing the current process is enough,
-# the loop already respawns it.
+# dnsmasq is restarted by entrypoint.sh's respawn loop.
 DHCP_CONF_PATH = Path("/app/dhcp/dnsmasq.conf")
 DHCP_LEASE_PATH = Path("/var/lib/misc/dnsmasq.leases")
 
@@ -52,10 +27,7 @@ def _inside_a_container():
 
 
 def _signal_pid_1(sig, action_description):
-    # Shared by rebuild and stop - both work by signaling PID 1 (the
-    # `ztp start` supervisor, see _supervise below), just with different
-    # signals/handlers. Refuses outside a container so this can't
-    # accidentally signal a real machine's actual init process.
+    # Shared by rebuild and stop; signals PID 1 (the supervisor).
     if not _inside_a_container():
         print(
             "refusing to signal PID 1 - this doesn't look like a container "
@@ -69,23 +41,14 @@ def _signal_pid_1(sig, action_description):
 
 
 def _cmd_rebuild(args):
-    # Soft reset: restart just the FastAPI process, in place, without
-    # exiting the container - sshd/cron/dnsmasq are untouched, and
-    # nothing needs re-validating since it's the same data the service
-    # was already running against.
+    # Soft reset: restart only the FastAPI process.
     return _signal_pid_1(
         signal.SIGHUP, "Soft reset: sending SIGHUP to PID 1 to restart the FastAPI process"
     )
 
 
 def _cmd_stop(args):
-    # Full stop: terminates the uvicorn child and exits the supervisor
-    # itself (PID 1), so the container stops - unlike SIGHUP/rebuild,
-    # there's no respawn. Also doubles as the fix for `docker stop`/
-    # `containerlab stop` on this container: PID 1 inside a container is
-    # immune to a signal's default disposition unless it installs a
-    # handler, so without this, SIGTERM from `docker stop` was a no-op
-    # until Docker's grace period expired and it escalated to SIGKILL.
+    # Full stop: exit the supervisor so the container stops.
     return _signal_pid_1(signal.SIGTERM, "Stopping: sending SIGTERM to PID 1 to stop the container")
 
 
@@ -96,8 +59,7 @@ def _spawn_uvicorn(host, port):
         stdout=log_file,
         stderr=subprocess.STDOUT,
     )
-    # Popen dup()'d the fd into the child - our copy isn't needed after
-    # that, and leaving it open would leak one fd per restart/rebuild.
+    # The child process holds its own copy of the fd.
     log_file.close()
     return proc
 
@@ -117,9 +79,7 @@ def _cmd_logs(args):
 
 
 def _find_dnsmasq_pids(proc_dir="/proc"):
-    # Scanning /proc directly rather than shelling out to `pgrep` -
-    # portable (no extra package needed in the image) and trivially
-    # testable against a fake /proc-shaped directory.
+    # Scan /proc directly; no pgrep dependency.
     pids = []
     for entry in os.listdir(proc_dir):
         if not entry.isdigit():
@@ -193,15 +153,7 @@ def _cmd_dhcp_restart(args):
 
 
 def _supervise(host, port, restart_requested=None, stop_requested=None, poll_interval=1.0):
-    """Run uvicorn as a child process (not exec'd directly) specifically
-    so this process can stay PID 1 and outlive a soft restart - `ztp
-    rebuild` signals *this* process, not uvicorn itself, so uvicorn can
-    be killed and respawned without the container ever exiting. `ztp
-    stop` signals it too, but to exit for good instead of respawning.
-    `restart_requested`/`stop_requested` are injectable (pre-built
-    threading.Event) purely for tests - real callers always let this
-    wire up its own SIGHUP/SIGTERM handlers.
-    """
+    """Run uvicorn as a child process so this process stays PID 1."""
     if restart_requested is None:
         restart_requested = threading.Event()
         signal.signal(signal.SIGHUP, lambda signum, frame: restart_requested.set())

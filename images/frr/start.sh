@@ -1,7 +1,6 @@
 #!/bin/sh
-# Host keys generated per container at boot, never baked into the image
-# (a baked key would be identical on every node).
+# Host keys are generated at boot.
 ssh-keygen -A
 /usr/sbin/sshd -e
-# Hand off to upstream's own FRR startup (watchfrr + daemons).
+# Hand off to upstream FRR startup.
 exec /usr/lib/frr/docker-start

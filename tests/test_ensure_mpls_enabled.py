@@ -78,8 +78,7 @@ def test_ensure_mpls_sysctls_sets_platform_labels_and_per_interface_input():
         calls.append(cmd)
 
         class Result:
-            # sysctl -n (read) returns the current value; this fake
-            # always reports "unset" so every write actually happens.
+            # Fake sysctl always reports unset, so every write runs.
             stdout = "0\n"
             returncode = 0
 

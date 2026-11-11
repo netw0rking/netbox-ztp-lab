@@ -83,12 +83,7 @@ def test_fixture_set_is_two_fabrics_plus_ten_pops():
 
 @pytest.mark.parametrize("fixture_name", ALL_FIXTURES)
 def test_every_frr_device_has_a_serial_number(fixture_name):
-    # schema/validate.py only requires serial_number for role in
-    # ("spine", "leaf") - but generate_topology.py's write_identity_files
-    # requires it for ANY bootstrappable platform (silently `continue`s
-    # past a device with no serial, skipping its bootstrap/daemons binds
-    # entirely). Confirmed live: mrr-01/bbr-01 once shipped with no
-    # serial_number, deployed with zero binds, and bgpd never started.
+    # Bootstrappable devices need a serial_number.
     with open(FIXTURES / fixture_name) as f:
         data = json.load(f)
     missing = [n for n, d in data["devices"].items() if d.get("platform") == "frr" and not d.get("serial_number")]
@@ -108,8 +103,7 @@ def test_each_pop_has_one_bbr_its_own_ztp_server_and_mgmt_switch(n, pop):
 
 
 def test_ladder_wiring_matches_the_drawing():
-    # 13 ladder links (2 rows of 5 + 5 rungs) + 4 fabric uplinks, every
-    # cable consistent from both ends, IPs 10.<100+a>.<b>.<x>/24.
+    # 13 ladder links and 4 fabric uplinks, cabled both ends.
     devices = _combined()
     num = {f"bbr-{n:02d}-{p}": n for n, p in POPS.items()}
     num["bbr-01-us-central-01a"], num["bbr-01-us-west-01a"] = 11, 12

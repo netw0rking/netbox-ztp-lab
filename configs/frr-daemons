@@ -1,24 +1,4 @@
-# Static /etc/frr/daemons for FRR-platform leafs (bind-mounted directly,
-# not templated - no per-device field ever varies here). Only difference
-# from frrouting/frr:latest's own shipped default: bgpd=yes instead of
-# the image's default bgpd=no.
-#
-# Why this has to be baked in before container start, not toggled live
-# by ztp_bootstrap.py:
-# docker-start only reads this file once, at container boot, to decide
-# which daemons to launch. Enabling a not-yet-running daemon therefore
-# requires `frrinit.sh restart`, which - confirmed live - tears down and
-# re-execs the whole daemon set from inside the running container, which
-# in this image's own process model brings down the container's PID 1
-# with it (Docker's restart policy then recreates the container from
-# scratch, discarding the containerlab-wired veth links, which a plain
-# container restart never restores). Pre-baking bgpd=yes here means
-# bgpd is already running from first boot, so ztp_bootstrap.py only ever
-# needs a live `vtysh -f` config load (no daemon start/stop, no restart,
-# no container death) to apply the fetched config.
-#
-# The watchfrr, zebra and staticd daemons are always started.
-#
+# bgpd is enabled at boot so config loads live via vtysh -f.
 bgpd=yes
 ospfd=no
 ospf6d=no

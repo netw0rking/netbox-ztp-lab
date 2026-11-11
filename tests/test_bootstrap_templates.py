@@ -14,8 +14,7 @@ def test_srlinux_bootstrap_script_curls_config_endpoint():
 
 
 def _render_full_frr_bootstrap():
-    # Every optional branch of ztp_frr.py.j2 switched on at once, so each
-    # side-effecting step it can emit is present in the output.
+    # All optional branches enabled.
     return _env.get_template("ztp_frr.py.j2").render(
         server_host="10.1.1.254",
         serial="FRR-TEST-0001",
@@ -42,11 +41,7 @@ def test_frr_bootstrap_renders_valid_python():
 
 
 def test_frr_bootstrap_is_idempotent_for_addresses_and_links():
-    # Confirmed live 2026-10-03: re-running the bootstrap after a failed
-    # fetch died on its first `ip addr add` ("Address already assigned")
-    # before reaching the fetch. Addresses must use `ip addr replace`,
-    # and every `ip link add` must go through ensure_link()'s existence
-    # check (the one remaining literal is inside ensure_link itself).
+    # Addresses use `ip addr replace`; links go through ensure_link().
     output = _render_full_frr_bootstrap()
     assert '"ip", "addr", "add"' not in output
     assert output.count('"ip", "link", "add"') == 1
@@ -55,17 +50,14 @@ def test_frr_bootstrap_is_idempotent_for_addresses_and_links():
 
 
 def test_frr_bootstrap_only_restarts_pathd_when_dead():
-    # A re-run with pathd still alive from the previous run must not
-    # start a second instance.
+    # A re-run must not start a second pathd.
     output = _render_full_frr_bootstrap()
     assert "if not _pathd_alive():" in output
     assert output.index("if not _pathd_alive():") < output.index("/usr/lib/frr/pathd -d")
 
 
 def test_frr_bootstrap_dry_runs_config_before_applying():
-    # `vtysh -f` exits 0 even on failed lines; `vtysh -C` (with a
-    # vtysh.conf present) exits non-zero, so it must run - and gate -
-    # before the real apply.
+    # vtysh -C must run and gate the real apply.
     output = _render_full_frr_bootstrap()
     dry_run = '["vtysh", "-C", "-f", "/etc/frr/frr.conf"], check=True'
     apply = '["vtysh", "-f", "/etc/frr/frr.conf"], check=True'
@@ -74,12 +66,7 @@ def test_frr_bootstrap_dry_runs_config_before_applying():
 
 
 def test_frr_bootstrap_provisions_vtysh_login_users():
-    # SSH/VTY login on FRR nodes (verified live 2026-10-04 on
-    # bbr-01-us-north-01a): a Linux account per users.yaml entry, login
-    # shell vtysh, in the frrvty group (owns the daemons' .vty sockets).
-    # busybox adduser -D creates the account locked ("!"), and OpenSSH
-    # refuses even key logins for a locked account - it must be set to
-    # "*" (no usable password, not locked) for ssh_key users.
+    # ssh_key users need a '*' password, not a locked one.
     output = _render_full_frr_bootstrap()
     assert "/ztp/users/" in output
     assert '"-s", "/usr/bin/vtysh", "-G", "frrvty"' in output
@@ -89,11 +76,7 @@ def test_frr_bootstrap_provisions_vtysh_login_users():
 
 
 def test_frr_bootstrap_waits_for_the_daemons_before_applying_config():
-    # Confirmed live 2026-10-04: with the bootstrap detached (starts at
-    # container start) and the SSH image running ssh-keygen/sshd before
-    # FRR's docker-start, bbr-04's `vtysh -f` ran before any daemon was up
-    # ("failed to connect to any daemons") and the script died before
-    # creating users. It must wait until vtysh can reach the daemons.
+    # Wait until vtysh can reach the daemons before applying.
     output = _render_full_frr_bootstrap()
     wait = output.index('["vtysh", "-c", "show version"]')
     assert wait < output.index('["vtysh", "-f", "/etc/frr/frr.conf"], check=True')

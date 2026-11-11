@@ -12,7 +12,7 @@ SITE_SLUGS = [
     "us-east-01a",
     "us-central-01a",
     "us-west-01a",
-    # ladder backbone POPs, R1..R10 (one bbr each)
+    # ladder backbone POPs, R1..R10
     "us-central-02a",
     "us-east-02a",
     "us-north-02a",
@@ -34,10 +34,7 @@ def export_data_model(nb, site_slugs):
             raise RuntimeError(f"site '{site_slug}' not found in NetBox - run build_data_model.py first")
         all_nb_devices.extend(nb.dcim.devices.filter(site_id=site.id))
 
-    # Global across every exported site (not per-site) so that cross-site
-    # cable-peer resolution below finds peers regardless of which site they
-    # belong to - e.g. a backbone ring link between two different sites'
-    # BBRs.
+    # Global across sites, so cross-site cable peers resolve.
     device_by_id = {d.id: d for d in all_nb_devices}
     devices = {}
 
@@ -65,8 +62,7 @@ def export_data_model(nb, site_slugs):
             entry["srv6_locator"] = nb_device.custom_fields["srv6_locator"]
         if nb_device.custom_fields.get("sr_policies"):
             entry["sr_policies"] = nb_device.custom_fields["sr_policies"]
-        # Routed EVPN Type-5 / DCI fields: built into NetBox all along but
-        # never read back, so they never survived a round-trip.
+        # Routed EVPN Type-5 / DCI fields, read back from NetBox.
         if nb_device.custom_fields.get("l3vni") is not None:
             entry["l3vni"] = nb_device.custom_fields["l3vni"]
         if nb_device.custom_fields.get("vrf_name"):
@@ -78,21 +74,7 @@ def export_data_model(nb, site_slugs):
         if nb_device.custom_fields.get("sr_index") is not None:
             entry["sr_index"] = nb_device.custom_fields["sr_index"]
         if nb_device.role.slug == "bbr":
-            # Not a device custom field. The Prefix itself is the single source
-            # of truth; scope_id here MUST stay this device's own site
-            # - matching by tag alone across every site would leak one
-            # site's hold-down block onto another's bbr device.
-            #
-            # Check the Tag object itself exists before filtering by it -
-            # confirmed live: no site currently uses the new addressing
-            # scheme (deliberately), so the
-            # "hold-down-block" Tag has never actually been created in
-            # NetBox. `nb.ipam.prefixes.filter(tag="hold-down-block", ...)`
-            # validates the tag slug against NetBox's own live choices and
-            # raises a 400 ("not one of the available choices") when it
-            # doesn't exist yet, rather than just returning no matches -
-            # every unit test here mocks this call, so none of them could
-            # have caught this real NetBox validation behavior.
+            # Scope to this device's site; the Tag must exist first.
             hold_down_tag = nb.extras.tags.get(slug="hold-down-block")
             hold_down_prefixes = (
                 list(
@@ -120,15 +102,7 @@ def export_data_model(nb, site_slugs):
         for iface in nb.dcim.interfaces.filter(device_id=nb_device.id):
             cable_id = getattr(iface, "cable", None)
             if not cable_id:
-                # Not part of the fabric/OOB wiring - e.g. the loopback0
-                # placeholder interface used solely to hold a
-                # primary_ip4 (NetBox requires primary_ip4 be assigned to
-                # one of the device's own interfaces), or the mgmt0/Vlan1
-                # placeholder interfaces used the same way for the
-                # containerlab mgmt IP / OOB SVI IP. The canonical data
-                # model's "interfaces" dict only ever contains cabled
-                # interfaces; the loopback and mgmt_ip addresses
-                # themselves are already captured above.
+                # Placeholder interfaces, not part of the cabled wiring.
                 continue
 
             if_entry = {}
@@ -141,12 +115,7 @@ def export_data_model(nb, site_slugs):
             cable = nb.dcim.cables.get(cable_id.id)
             other_end = None
             for termination in list(cable.a_terminations) + list(cable.b_terminations):
-                # a_terminations/b_terminations entries are the resolved
-                # terminating objects themselves (an Interfaces record, same
-                # shape confirmed live for the cable-creation code) -
-                # not a dict with a flat "object_id" key. Compare .id
-                # directly (confirmed live: termination.id is the
-                # interface's own id, e.g. 58/66 for a real fabric cable).
+                # Compare termination .id directly; it is the interface id.
                 if termination.id != iface.id:
                     other_end = termination
             if other_end:
@@ -154,39 +123,7 @@ def export_data_model(nb, site_slugs):
                 peer_device = device_by_id.get(peer_iface.device.id)
                 connects_to = {"device": peer_device.name, "interface": peer_iface.name}
 
-                # A link is "fabric" iff both ends are BGP-speaking (spine/
-                # leaf) devices - not merely because this end carries an IP.
-                # Confirmed live: ztp-server-us-east-01a's eth1 carries an IP
-                # but is an oob link (its peer, mgmt-switch-us-east-01a, has
-                # no bgp_asn); using if_entry.get("ip") here mis-classified
-                # it as "fabric". peer_ip/peer_asn are likewise fabric-only -
-                # confirmed live: mgmt-switch-us-east-01a's switch-port links
-                # to the spines/leafs (oob) otherwise leaked the peer's
-                # bgp_asn, and the mgmt-switch-us-east-01a->ztp-server-us-east-01a
-                # oob link leaked ztp-server-us-east-01a's eth1 IP as a
-                # spurious "peer_ip".
-                #
-                # A link to a "host"-role device is neither fabric nor oob -
-                # it's this lab's test endpoint, either "overlay" (L2-bridged,
-                # no address of its own on this end) or "access" (routed
-                # EVPN Type-5, this end has its own IP). Confirmed live: the
-                # old two-way fabric/oob split silently mis-classified
-                # esr-01-us-central-01a's host-facing link as "oob" (host has
-                # no bgp_asn), and generate_topology.py's FRR branch drops
-                # any interface matching none of its four known roles - the
-                # host-facing port was never enslaved into the VXLAN bridge,
-                # so host-01 couldn't reach anything across the fabric.
-                # A link between two devices in DIFFERENT sites is a
-                # backbone-ring link - IS-IS-only,
-                # no peer_ip/peer_asn (the real EVPN exchange rides a
-                # separate multihop eBGP session, backbone_peers, not
-                # per-link BGP). Confirmed live deploying the 4-site ring:
-                # both ring BBRs have bgp_asn set (same as any "fabric"
-                # pair), so the old fabric/oob-only split mis-classified
-                # a ring link as "fabric" - generate_topology.py's
-                # per-interface IS-IS enablement is gated on
-                # role == "backbone", so it silently never rendered and
-                # isisd never formed an adjacency at all.
+                # Link role: fabric, oob, host-facing, or backbone ring.
                 peer_role = peer_device.role.slug if peer_device.role else None
                 if peer_role == "host":
                     if_entry["role"] = "access" if if_entry.get("ip") else "overlay"
@@ -256,11 +193,7 @@ def write_and_maybe_pr(data):
 
 
 def main(argv=None):
-    """CLI entry point - also what `ztp generate-data` (see ztp_cli/cli.py
-   )
-    calls directly, rather than shelling out to this file as a
-    subprocess. Takes no arguments (argv accepted only for a consistent
-    `main(argv)` shape across this project's CLI entry points)."""
+    """CLI entry point. Also used by `ztp generate-data`."""
     nb = get_client()
     data = export_data_model(nb, SITE_SLUGS)
     write_and_maybe_pr(data)

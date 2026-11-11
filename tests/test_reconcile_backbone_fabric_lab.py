@@ -24,8 +24,7 @@ def _fixture(tmp_path, dev):
 
 
 def test_plan_clears_custom_fields_the_fixture_no_longer_sets(tmp_path):
-    # The builder only creates/updates - an ESR moved from the L2 overlay
-    # to the routed DCI VRF would otherwise keep exporting overlay_vni.
+    # Builder only creates/updates; old overlay_vni stays set.
     dev = {"role": "leaf", "bgp_asn": 65100, "l3vni": 50000, "interfaces": {}}
     nb = _nb_with({"bgp_asn": 65100, "l3vni": 50000, "overlay_vni": 10010, "srv6_locator": None}, {})
     actions = plan_actions(nb, _fixture(tmp_path, dev), retired_sites=[])
@@ -33,8 +32,7 @@ def test_plan_clears_custom_fields_the_fixture_no_longer_sets(tmp_path):
 
 
 def test_plan_deletes_ips_on_fixture_interfaces_that_the_fixture_no_longer_has(tmp_path):
-    # e.g. a fabric BBR's eth3 moving from the ring (10.1.0.1/31) to R1
-    # (10.101.11.11/24) - exporter peer_ip lookups break with two IPs.
+    # Two IPs on one interface break exporter peer_ip lookups.
     dev = {"role": "bbr", "interfaces": {"eth3": {"role": "backbone", "ip": "10.101.11.11/24"}}}
     nb = _nb_with({}, {hash("eth3"): ["10.1.0.1/31", "10.101.11.11/24"]})
     actions = plan_actions(nb, _fixture(tmp_path, dev), retired_sites=[])
@@ -42,10 +40,7 @@ def test_plan_deletes_ips_on_fixture_interfaces_that_the_fixture_no_longer_has(t
 
 
 def test_plan_deletes_dangling_or_mismatched_cables_on_fixture_interfaces(tmp_path):
-    # Found live 2026-10-04: deleting the retired transit BBRs left their
-    # cables one-ended on the fabric BBRs' eth3/eth4 (NetBox keeps a cable
-    # when one end's device is deleted). build_cables skips any interface
-    # that already has a cable, so the new R1/R6 uplinks were never made.
+    # Interfaces with a stale cable are skipped by build_cables.
     dev = {"role": "bbr", "interfaces": {
         "eth3": {"role": "backbone", "connects_to": {"device": "bbr-01-us-central-02a", "interface": "eth4"}},
         "eth4": {"role": "backbone", "connects_to": {"device": "bbr-06-us-central-03a", "interface": "eth4"}},
